@@ -121,7 +121,7 @@ output "control_plane_nodes" {
       index       = i + 1
       name        = server.name
       public_ipv4 = server.ipv4_address
-      private_ip  = server.network[0].ip
+      private_ip  = tolist(server.network)[0].ip
       server_type = server.server_type
       id          = server.id
     }
@@ -140,7 +140,7 @@ output "first_control_plane_ip" {
 
 output "first_control_plane_private_ip" {
   description = "First control plane node private IP"
-  value       = hcloud_server.control_plane[0].network[0].ip
+  value       = tolist(hcloud_server.control_plane[0].network)[0].ip
 }
 
 # =============================================================================
@@ -159,7 +159,7 @@ output "worker_nodes" {
       index       = i + 1
       name        = server.name
       public_ipv4 = server.ipv4_address
-      private_ip  = server.network[0].ip
+      private_ip  = tolist(server.network)[0].ip
       server_type = server.server_type
       id          = server.id
     }
@@ -260,8 +260,8 @@ Features Enabled:
 
 Access Commands:
   SSH to CP1:    ssh -i ${var.ssh_private_key_path} root@${hcloud_server.control_plane[0].ipv4_address}
-  Get Kubeconfig: ${self.get_kubeconfig_command.value}
-  Update Config:  ${self.kubeconfig_update_command.value}
+  Get Kubeconfig: scp -i ${var.ssh_private_key_path} root@${hcloud_server.control_plane[0].ipv4_address}:/etc/rancher/rke2/rke2.yaml ./kubeconfig.yaml
+  Update Config:  sed -i 's/127.0.0.1/${hcloud_load_balancer.rke2_api.ipv4}/g' kubeconfig.yaml
   Set KUBECONFIG: export KUBECONFIG=$(pwd)/kubeconfig.yaml
 
 ⚠️  IMPORTANT: Wait 3-5 minutes for RKE2 installation to complete!
