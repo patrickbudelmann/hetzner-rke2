@@ -1,0 +1,311 @@
+#cloud-config
+package_update: true
+package_upgrade: true
+
+packages:
+  - curl
+  - jq
+  - apt-transport-https
+  - ca-certificates
+  - gnupg
+  - lsb-release
+  - software-properties-common
+  - qemu-guest-agent
+  - iptables-persistent
+
+# Enable qemu-guest-agent for better Hetzner integration
+runcmd:
+  - systemctl enable qemu-guest-agent
+  - systemctl start qemu-guest-agent
+
+write_files:
+  # RKE2 main configuration file
+  - path: /etc/rancher/rke2/config.yaml
+    content: |
+      token: ${rke2_token}
+      node-name: ${node_name}
+      node-label:
+        - cluster=${cluster_name}
+        - node-type=control-plane
+%{ if enable_hccm ~}
+        - hertzner.cloud/location=${region}
+        - hertzner.cloud/server-type=${server_type}
+%{ endif ~}
+%{ for key, value in labels ~}
+        - ${key}=${value}
+%{ endfor ~}
+%{ for taint in taints ~}
+      node-taint:
+        - "${taint}"
+%{ endfor ~}
+      tls-san:
+        - ${private_ip}
+        - ${first_control_plane_ip}
+        - ${lb_ip}
+      cni: ${cni}
+      cluster-cidr: 10.42.0.0/16
+      service-cidr: 10.43.0.0/16
+      cluster-dns: 10.43.0.10
+      kubelet-arg:
+        - "cloud-provider=external"
+        - "eviction-hard=memory.available<500Mi,nodefs.available<10%"
+      kube-controller-manager-arg:
+        - "bind-address=0.0.0.0"
+      kube-scheduler-arg:
+        - "bind-address=0.0.0.0"
+      kube-proxy-arg:
+        - "metrics-bind-address=0.0.0.0"
+      disable-cloud-controller: true
+%{ if cis_profile != "" ~}
+      profile: ${cis_profile}
+%{ endif ~}
+%{ if !disable_etcd_snapshots ~}
+      etcd-snapshot-schedule-cron: "0 */${etcd_snapshot_interval} * * *"
+      etcd-snapshot-retention: ${etcd_snapshot_retention}
+%{ endif ~}
+    owner: root:root
+    permissions: '0600'
+
+%{ if is_first_server ~}
+  # First server initialization
+  - path: /etc/rancher/rke2/config.yaml.d/90-first-server.yaml
+    content: |
+      cluster-init: true
+    owner: root:root
+    permissions: '0600'
+%{ else ~}
+  # Additional servers join configuration
+  - path: /etc/rancher/rke2/config.yaml.d/90-join-server.yaml
+    content: |
+      server: https://${first_control_plane_ip}:9345
+    owner: root:root
+    permissions: '0600'
+%{ endif ~}
+
+%{ if enable_hccm ~}
+  # HCCM secret manifest - applied automatically by RKE2
+  - path: /var/lib/rancher/rke2/server/manifests/hcloud-secret.yaml
+    content: |
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: hcloud
+        namespace: kube-system
+      type: Opaque
+      stringData:
+        token: "${hcloud_token}"
+        network: "${network_id}"
+    owner: root:root
+    permissions: '0600'
+
+  # HCCM deployment manifest - applied automatically by RKE2
+  - path: /var/lib/rancher/rke2/server/manifests/hcloud-cloud-controller-manager.yaml
+    content: |
+      apiVersion: helm.cattle.io/v1
+      kind: HelmChart
+      metadata:
+        name: hcloud-cloud-controller-manager
+        namespace: kube-system
+      spec:
+        repo: https://charts.hetzner.cloud
+        chart: hcloud-cloud-controller-manager
+        targetNamespace: kube-system
+        version: "${hccm_version}"
+        valuesContent: |-
+          networking:
+            enabled: true
+            network:
+              id: "${network_id}"
+          env:
+            HCLOUD_NETWORK_NAME: "${network_name}"
+          nodeSelector:
+            node-role.kubernetes.io/control-plane: "true"
+          tolerations:
+            - key: "node-role.kubernetes.io/control-plane"
+              effect: "NoSchedule"
+              operator: "Exists"
+            - key: "CriticalAddonsOnly"
+              effect: "NoExecute"
+              operator: "Exists"
+    owner: root:root
+    permissions: '0600'
+%{ endif ~}
+
+%{ if enable_csi ~}
+  # Hetzner CSI driver manifest
+  - path: /var/lib/rancher/rke2/server/manifests/hcloud-csi.yaml
+    content: |
+      apiVersion: helm.cattle.io/v1
+      kind: HelmChart
+      metadata:
+        name: hcloud-csi
+        namespace: kube-system
+      spec:
+        repo: https://charts.hetzner.cloud
+        chart: hcloud-csi
+        targetNamespace: kube-system
+        version: "${csi_version}"
+        valuesContent: |-
+          controller:
+            nodeSelector:
+              node-role.kubernetes.io/control-plane: "true"
+            tolerations:
+              - key: "node-role.kubernetes.io/control-plane"
+                effect: "NoSchedule"
+                operator: "Exists"
+          storageClasses:
+            - name: hcloud-volumes
+              reclaimPolicy: Delete
+              volumeBindingMode: WaitForFirstConsumer
+              allowVolumeExpansion: true
+            - name: hcloud-volumes-encrypted
+              reclaimPolicy: Delete
+              volumeBindingMode: WaitForFirstConsumer
+              allowVolumeExpansion: true
+              encrypted: true
+    owner: root:root
+    permissions: '0600'
+
+  # CSI encryption secret
+  - path: /var/lib/rancher/rke2/server/manifests/hcloud-csi-secret.yaml
+    content: |
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: hcloud-csi-encryption
+        namespace: kube-system
+      type: Opaque
+      stringData:
+        encryption-passphrase: "${csi_encryption_passphrase}"
+    owner: root:root
+    permissions: '0600'
+%{ endif ~}
+
+%{ if enable_auto_updates ~}
+  # Enable automatic security updates
+  - path: /etc/apt/apt.conf.d/50unattended-upgrades
+    content: |
+      Unattended-Upgrade::Allowed-Origins {
+          "\${distro_id}:\${distro_codename}-security";
+          "\${distro_id}ESMApps:\${distro_codename}-apps-security";
+          "\${distro_id}ESM:\${distro_codename}-infra-security";
+      };
+      Unattended-Upgrade::Automatic-Reboot "true";
+      Unattended-Upgrade::Automatic-Reboot-Time "04:00";
+      Unattended-Upgrade::Remove-Unused-Kernel-Packages "true";
+      Unattended-Upgrade::Remove-Unused-Dependencies "true";
+    owner: root:root
+    permissions: '0644'
+
+  - path: /etc/apt/apt.conf.d/20auto-upgrades
+    content: |
+      APT::Periodic::Update-Package-Lists "1";
+      APT::Periodic::Download-Upgradeable-Packages "1";
+      APT::Periodic::AutocleanInterval "7";
+      APT::Periodic::Unattended-Upgrade "1";
+    owner: root:root
+    permissions: '0644'
+%{ endif ~}
+
+  # Script to wait for RKE2 and setup kubeconfig
+  - path: /usr/local/bin/wait-for-rke2.sh
+    content: |
+      #!/bin/bash
+      set -e
+
+      echo "Waiting for RKE2 to be ready..."
+      until [ -f /etc/rancher/rke2/rke2.yaml ]; do
+        echo "  - Waiting for kubeconfig..."
+        sleep 5
+      done
+
+      # Wait for API server to be responsive
+      export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
+      until kubectl get nodes &>/dev/null; do
+        echo "  - Waiting for API server..."
+        sleep 5
+      done
+
+      echo "RKE2 is ready!"
+
+      # Setup kubeconfig for root
+      mkdir -p /root/.kube
+      cp /etc/rancher/rke2/rke2.yaml /root/.kube/config
+      chmod 600 /root/.kube/config
+
+      # Create symlinks for binaries
+      ln -sf /var/lib/rancher/rke2/bin/kubectl /usr/local/bin/kubectl
+      ln -sf /var/lib/rancher/rke2/bin/crictl /usr/local/bin/crictl
+      ln -sf /var/lib/rancher/rke2/bin/ctr /usr/local/bin/ctr
+      ln -sf /run/k3s/containerd/containerd.sock /run/containerd/containerd.sock
+
+      echo "Setup complete. Kubernetes version:"
+      kubectl version --short 2>/dev/null || kubectl version
+    owner: root:root
+    permissions: '0755'
+
+%{ if cis_profile != "" ~}
+  # CIS hardening script
+  - path: /usr/local/bin/apply-cis-hardening.sh
+    content: |
+      #!/bin/bash
+      set -e
+
+      echo "Applying CIS hardening..."
+
+      # Create etcd user if not exists
+      if ! id -u etcd &>/dev/null; then
+        useradd -r -c "etcd user" -s /sbin/nologin -M etcd -U
+      fi
+
+      # Apply sysctl settings
+      if [ -f /usr/share/rke2/rke2-cis-sysctl.conf ]; then
+        cp -f /usr/share/rke2/rke2-cis-sysctl.conf /etc/sysctl.d/60-rke2-cis.conf
+        systemctl restart systemd-sysctl
+      fi
+
+      # Set proper permissions for RKE2 directories
+      chmod 700 /etc/rancher/rke2
+      chmod 700 /var/lib/rancher/rke2/server
+
+      echo "CIS hardening applied."
+    owner: root:root
+    permissions: '0755'
+%{ endif ~}
+
+# Main installation commands
+runcmd:
+  # Create directories
+  - mkdir -p /etc/rancher/rke2
+  - mkdir -p /var/lib/rancher/rke2/server/manifests
+  - mkdir -p /run/containerd
+
+%{ if cis_profile != "" ~}
+  # Apply CIS hardening before RKE2 install
+  - /usr/local/bin/apply-cis-hardening.sh
+%{ endif ~}
+
+  # Install RKE2
+  - curl -sfL https://get.rke2.io | INSTALL_RKE2_VERSION="${rke2_version}" sh -
+
+  # Enable and start RKE2
+  - systemctl enable rke2-server.service
+  - systemctl start rke2-server.service
+
+  # Wait for RKE2 to be ready and setup environment
+  - /usr/local/bin/wait-for-rke2.sh
+
+  # Label node with additional information
+  - |
+    export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
+    kubectl label node ${node_name} node.kubernetes.io/instance-type=${server_type} --overwrite || true
+    kubectl label node ${node_name} topology.kubernetes.io/region=${region} --overwrite || true
+
+  # Print completion message
+  - echo "=============================================="
+  - echo "RKE2 Control Plane setup complete on ${node_name}"
+  - echo "=============================================="
+
+final_message: |
+  RKE2 control plane setup completed on ${node_name}
+  ${is_first_server ? "This is the first server - cluster initialized" : "Joined existing cluster"}

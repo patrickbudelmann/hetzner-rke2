@@ -1,0 +1,124 @@
+#cloud-config
+package_update: true
+package_upgrade: true
+
+packages:
+  - curl
+  - jq
+  - apt-transport-https
+  - ca-certificates
+  - gnupg
+  - lsb-release
+  - software-properties-common
+  - qemu-guest-agent
+  - iptables-persistent
+
+# Enable qemu-guest-agent for better Hetzner integration
+runcmd:
+  - systemctl enable qemu-guest-agent
+  - systemctl start qemu-guest-agent
+
+write_files:
+  # RKE2 agent configuration file
+  - path: /etc/rancher/rke2/config.yaml
+    content: |
+      server: https://${first_control_plane_ip}:9345
+      token: ${rke2_token}
+      node-name: ${node_name}
+      node-label:
+        - cluster=${cluster_name}
+        - node-type=worker
+%{ if enable_hccm ~}
+        - hertzner.cloud/location=${region}
+        - hertzner.cloud/server-type=${server_type}
+%{ endif ~}
+%{ for key, value in labels ~}
+        - ${key}=${value}
+%{ endfor ~}
+%{ for taint in taints ~}
+      node-taint:
+        - "${taint}"
+%{ endfor ~}
+      kubelet-arg:
+        - "cloud-provider=external"
+        - "eviction-hard=memory.available<500Mi,nodefs.available<10%"
+      kube-proxy-arg:
+        - "metrics-bind-address=0.0.0.0"
+    owner: root:root
+    permissions: '0600'
+
+%{ if enable_auto_updates ~}
+  # Enable automatic security updates
+  - path: /etc/apt/apt.conf.d/50unattended-upgrades
+    content: |
+      Unattended-Upgrade::Allowed-Origins {
+          "\${distro_id}:\${distro_codename}-security";
+          "\${distro_id}ESMApps:\${distro_codename}-apps-security";
+          "\${distro_id}ESM:\${distro_codename}-infra-security";
+      };
+      Unattended-Upgrade::Automatic-Reboot "true";
+      Unattended-Upgrade::Automatic-Reboot-Time "04:00";
+      Unattended-Upgrade::Remove-Unused-Kernel-Packages "true";
+      Unattended-Upgrade::Remove-Unused-Dependencies "true";
+    owner: root:root
+    permissions: '0644'
+
+  - path: /etc/apt/apt.conf.d/20auto-upgrades
+    content: |
+      APT::Periodic::Update-Package-Lists "1";
+      APT::Periodic::Download-Upgradeable-Packages "1";
+      APT::Periodic::AutocleanInterval "7";
+      APT::Periodic::Unattended-Upgrade "1";
+    owner: root:root
+    permissions: '0644'
+%{ endif ~}
+
+  # Script to wait for RKE2 agent and setup kubeconfig
+  - path: /usr/local/bin/wait-for-rke2-agent.sh
+    content: |
+      #!/bin/bash
+      set -e
+
+      echo "Waiting for RKE2 agent to be ready..."
+
+      # Wait for RKE2 agent to be running
+      until systemctl is-active --quiet rke2-agent; do
+        echo "  - Waiting for rke2-agent service..."
+        sleep 5
+      done
+
+      # Create symlinks for binaries
+      mkdir -p /root/.kube
+      ln -sf /var/lib/rancher/rke2/bin/kubectl /usr/local/bin/kubectl
+      ln -sf /var/lib/rancher/rke2/bin/crictl /usr/local/bin/crictl
+      ln -sf /var/lib/rancher/rke2/bin/ctr /usr/local/bin/ctr
+      ln -sf /run/k3s/containerd/containerd.sock /run/containerd/containerd.sock
+
+      echo "RKE2 agent is ready!"
+    owner: root:root
+    permissions: '0755'
+
+# Main installation commands
+runcmd:
+  # Create directories
+  - mkdir -p /etc/rancher/rke2
+  - mkdir -p /run/containerd
+
+  # Install RKE2 agent
+  - curl -sfL https://get.rke2.io | INSTALL_RKE2_TYPE="agent" INSTALL_RKE2_VERSION="${rke2_version}" sh -
+
+  # Enable and start RKE2 agent
+  - systemctl enable rke2-agent.service
+  - systemctl start rke2-agent.service
+
+  # Wait for RKE2 agent to be ready
+  - /usr/local/bin/wait-for-rke2-agent.sh
+
+  # Print completion message
+  - echo "=============================================="
+  - echo "RKE2 Worker setup complete on ${node_name}"
+  - echo "=============================================="
+
+final_message: |
+  RKE2 worker setup completed on ${node_name}
+  Connected to control plane at https://${first_control_plane_ip}:9345

@@ -1,0 +1,86 @@
+# =============================================================================
+# REQUIRED: Hetzner Cloud API Token
+# Get your token from: https://console.hetzner.cloud/projects/ -> Security -> API Tokens
+# =============================================================================
+hcloud_token = "your-hetzner-cloud-api-token-here"
+
+# =============================================================================
+# REQUIRED: SSH Public Key
+# Generate with: ssh-keygen -t ed25519 -C "your-email@example.com"
+# Get the public key: cat ~/.ssh/id_ed25519.pub
+# =============================================================================
+ssh_public_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAID... your-email@example.com"
+
+# Optional: Path to your SSH private key
+# ssh_private_key_path = "~/.ssh/id_ed25519"
+
+# =============================================================================
+# Region Configuration
+# =============================================================================
+region = "fsn1"  # fsn1, nbg1, hel1 (Europe), ash (US East), hil (US West)
+
+# =============================================================================
+# Cluster Configuration
+# =============================================================================
+cluster_name = "production"
+environment  = "prod"
+
+# =============================================================================
+# Control Plane Configuration
+# Adjust based on your requirements
+# =============================================================================
+control_plane_count       = 3  # Use odd numbers for etcd quorum
+control_plane_server_type = "cpx21"  # cpx11, cpx21, cpx31, cpx41, cpx51
+control_plane_image       = "ubuntu-24.04"
+
+# =============================================================================
+# Worker Node Configuration
+# =============================================================================
+worker_count       = 2
+worker_server_type = "cpx31"  # Larger for workloads: cpx31, cpx41, cpx51
+worker_image       = "ubuntu-24.04"
+
+# =============================================================================
+# Network Configuration (Private Network)
+# =============================================================================
+network_zone           = "eu-central"
+network_cidr           = "10.0.0.0/16"
+control_plane_subnet   = "10.0.1.0/24"
+worker_subnet          = "10.0.2.0/24"
+load_balancer_subnet   = "10.0.3.0/24"
+
+# =============================================================================
+# SECURITY: Firewall Configuration
+# IMPORTANT: Restrict SSH access to your IP only!
+# Get your IP: curl -s https://ipinfo.io/ip
+# =============================================================================
+allowed_ssh_cidr = [
+  "123.45.67.89/32",  # Replace with your actual IP!
+  # "10.0.0.0/8",      # Optional: Allow from your VPN/office network
+]
+
+# Additional CIDRs allowed for other services (optional)
+additional_allowed_cidrs = []
+
+# =============================================================================
+# RKE2 Configuration
+# =============================================================================
+rke2_version = "v1.29.3+rke2r1"  # Check latest: https://github.com/rancher/rke2/releases
+
+# Optional: Set a specific token (auto-generated if empty)
+# rke2_token = "your-secure-token-here"
+
+# CNI Plugin: cilium (recommended), canal, calico, flannel
+rke2_cni = "cilium"
+
+# =============================================================================
+# Load Balancer Configuration
+# =============================================================================
+lb_type     = "lb11"  # lb11 (small), lb21 (medium), lb31 (large)
+lb_algorithm = "round_robin"
+
+# =============================================================================
+# Backup Configuration
+# =============================================================================
+enable_backups = true
+backup_window  = "04:00"
