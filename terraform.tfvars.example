@@ -29,15 +29,15 @@ environment  = "prod"
 # Control Plane Configuration
 # Adjust based on your requirements
 # =============================================================================
-control_plane_count       = 3  # Use odd numbers for etcd quorum
-control_plane_server_type = "cpx21"  # cpx11, cpx21, cpx31, cpx41, cpx51
+control_plane_count       = 1  # Use odd numbers for etcd quorum
+control_plane_server_type = "cx23"  # cpx11, cpx21, cpx31, cpx41, cpx51
 control_plane_image       = "ubuntu-24.04"
 
 # =============================================================================
 # Worker Node Configuration
 # =============================================================================
 worker_count       = 2
-worker_server_type = "cpx31"  # Larger for workloads: cpx31, cpx41, cpx51
+worker_server_type = "cx33"  # Larger for workloads: cpx31, cpx41, cpx51
 worker_image       = "ubuntu-24.04"
 
 # =============================================================================
@@ -65,7 +65,7 @@ additional_allowed_cidrs = []
 # =============================================================================
 # RKE2 Configuration
 # =============================================================================
-rke2_version = "v1.29.3+rke2r1"  # Check latest: https://github.com/rancher/rke2/releases
+rke2_version = "v1.35.3+rke2r3"  # Check latest: https://github.com/rancher/rke2/releases
 
 # Optional: Set a specific token (auto-generated if empty)
 # rke2_token = "your-secure-token-here"
