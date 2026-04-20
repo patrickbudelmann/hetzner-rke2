@@ -105,7 +105,7 @@ resource "null_resource" "kubeconfig_update" {
       echo ""
       echo "To use the Load Balancer with kubectl:"
       echo "1. Get the kubeconfig:"
-      echo "   scp -i ${var.ssh_private_key_path} root@${hcloud_server.control_plane[0].ipv4_address}:/etc/rancher/rke2/rke2.yaml ./kubeconfig.yaml"
+      echo "   scp root@${hcloud_server.control_plane[0].ipv4_address}:/etc/rancher/rke2/rke2.yaml ./kubeconfig.yaml"
       echo ""
       echo "2. Update to use Load Balancer IP:"
       echo "   sed -i '' 's/127.0.0.1/${hcloud_load_balancer.rke2_api.ipv4}/g' kubeconfig.yaml"
