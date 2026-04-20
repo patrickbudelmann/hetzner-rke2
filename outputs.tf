@@ -211,9 +211,12 @@ output "kubeconfig_use_lb_command" {
 }
 
 output "tls_fix_instructions" {
-  description = "Instructions to add LB IP to RKE2 TLS certificate"
+  description = "Instructions to add LB IP to RKE2 TLS certificate (automated, but shown for reference)"
   value       = <<-EOT
-# To use the Load Balancer IP with kubectl, you need to add it to the RKE2 TLS certificate:
+# ⚠️  NOTE: This fix is now AUTOMATED during deployment!
+# The LB IP ${hcloud_load_balancer.rke2_api.ipv4} is automatically added to the RKE2 TLS certificate.
+
+# Manual steps (if you need to do this manually):
 
 # 1. SSH to the first control plane node:
 ssh -i ${var.ssh_private_key_path} root@${hcloud_server.control_plane[0].ipv4_address}
@@ -230,12 +233,8 @@ tls-san:
 # 4. Restart RKE2 to regenerate certificates:
 sudo systemctl restart rke2-server
 
-# 5. Wait for RKE2 to restart, then update kubeconfig:
-# (On your local machine)
+# 5. Update kubeconfig on your local machine:
 sed -i '' 's/127.0.0.1/${hcloud_load_balancer.rke2_api.ipv4}/g' kubeconfig.yaml
-
-# Alternative: Use the control plane IP directly (no TLS fix needed):
-# sed -i '' 's/127.0.0.1/${hcloud_server.control_plane[0].ipv4_address}/g' kubeconfig.yaml
 EOT
 }
 
@@ -292,12 +291,12 @@ Features Enabled:
   Auto Updates:  ${var.enable_auto_updates ? "Yes" : "No"}
   CIS Hardening: ${var.rke2_cis_profile != "" ? var.rke2_cis_profile : "No"}
 
-Quick Start (Recommended):
+Quick Start (Use Load Balancer - RECOMMENDED):
   1. Get Kubeconfig:
      scp -i ${var.ssh_private_key_path} root@${hcloud_server.control_plane[0].ipv4_address}:/etc/rancher/rke2/rke2.yaml ./kubeconfig.yaml
   
-  2. Update to use Control Plane IP (avoids TLS issues):
-     sed -i '' 's/127.0.0.1/${hcloud_server.control_plane[0].ipv4_address}/g' kubeconfig.yaml
+  2. Update to use Load Balancer IP (TLS auto-fixed):
+     sed -i '' 's/127.0.0.1/${hcloud_load_balancer.rke2_api.ipv4}/g' kubeconfig.yaml
   
   3. Set KUBECONFIG:
      export KUBECONFIG=$(pwd)/kubeconfig.yaml
@@ -305,10 +304,13 @@ Quick Start (Recommended):
   4. Verify:
      kubectl get nodes
 
+Alternative (Use Control Plane IP directly):
+  sed -i '' 's/127.0.0.1/${hcloud_server.control_plane[0].ipv4_address}/g' kubeconfig.yaml
+
 ⚠️  IMPORTANT NOTES:
-   - Wait 3-5 minutes for RKE2 installation to complete
-   - Using CP IP avoids TLS certificate issues
-   - To use LB IP later, see: terraform output tls_fix_instructions
+   - Wait 3-5 minutes for RKE2 installation AND TLS certificate update
+   - The LB IP is automatically added to the TLS certificate
+   - If you get TLS errors, wait 1-2 more minutes and try again
 
 EOT
 }
