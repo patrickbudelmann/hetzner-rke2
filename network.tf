@@ -8,7 +8,7 @@ resource "hcloud_network" "rke2" {
 
   # Protect the network from accidental deletion
   lifecycle {
-    prevent_destroy = true
+    prevent_destroy = false
   }
 }
 
