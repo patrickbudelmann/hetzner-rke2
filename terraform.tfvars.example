@@ -5,6 +5,17 @@
 hcloud_token = "your-hetzner-cloud-api-token-here"
 
 # =============================================================================
+# RECOMMENDED: Dedicated Temporary Token for Cloud-Init (Security Best Practice)
+# 
+# Create a SECOND token in Hetzner console for cloud-init LB discovery.
+# This token is passed to CP nodes during first boot and wiped after use.
+# After deployment, REVOKE this token in Hetzner console for security.
+# 
+# If not provided, the main hcloud_token is used (less secure).
+# =============================================================================
+# hcloud_token_cloudinit = "your-temporary-token-for-cloudinit"
+
+# =============================================================================
 # REQUIRED: SSH Public Key
 # Generate with: ssh-keygen -t ed25519 -C "your-email@example.com"
 # Get the public key: cat ~/.ssh/id_ed25519.pub

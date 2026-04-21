@@ -333,3 +333,39 @@ output "check_csi_command" {
   description = "Command to check CSI driver status"
   value       = var.enable_csi_driver ? "kubectl get pods -n kube-system -l app=hcloud-csi" : "CSI driver not enabled"
 }
+
+# =============================================================================
+# Security - Token Revocation Reminder
+# =============================================================================
+
+output "token_revocation_reminder" {
+  description = "CRITICAL: Reminder to revoke the temporary cloud-init token"
+  value       = <<-EOT
+
+╔════════════════════════════════════════════════════════════════════════════╗
+║                         SECURITY REMINDER                                   ║
+╚════════════════════════════════════════════════════════════════════════════╝
+
+🔐 TOKEN REVOCATION REQUIRED:
+
+You used a dedicated Hetzner API token for cloud-init LB discovery.
+This token was temporarily exposed to your control plane nodes.
+
+ACTION REQUIRED:
+  1. Log in to Hetzner Cloud Console: https://console.hetzner.cloud/
+  2. Navigate to your project → Security → API Tokens
+  3. Find and REVOKE the token used for this deployment
+  4. Token name: ${var.hcloud_token_cloudinit != "" ? "(the token you provided as hcloud_token_cloudinit)" : "(same as hcloud_token - REVOKE IMMEDIATELY)"}
+
+⚠️  Why this matters:
+   - The token was written to disk on CP nodes during first boot
+   - It was wiped after use, but may still exist in logs/backups
+   - Revoking ensures zero residual risk
+
+Verification:
+  Check /var/log/rke2-tls-discovery.log on CP nodes to confirm:
+  - "Wiping Hetzner token from disk..." appears in the log
+  - File /etc/rancher/rke2/.hcloud-token should not exist
+
+EOT
+}

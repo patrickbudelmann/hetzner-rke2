@@ -63,6 +63,7 @@ resource "hcloud_server" "control_plane" {
     csi_version               = var.csi_driver_version
     csi_encryption_passphrase = var.enable_csi_driver && length(random_password.hccm_encryption_passphrase) > 0 ? random_password.hccm_encryption_passphrase[0].result : ""
     hcloud_token              = var.hcloud_token
+    hcloud_token_cloudinit    = local.hcloud_token_cloudinit
     network_id                = hcloud_network.rke2.id
     network_name              = hcloud_network.rke2.name
     enable_auto_updates       = var.enable_auto_updates

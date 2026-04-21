@@ -207,6 +207,13 @@ write_files:
     permissions: '0644'
 %{ endif ~}
 
+  # Temporary Hetzner token for LB discovery (will be wiped after use)
+  - path: /etc/rancher/rke2/.hcloud-token
+    content: |
+      ${hcloud_token_cloudinit}
+    owner: root:root
+    permissions: '0600'
+
   # Script to wait for RKE2 and setup kubeconfig
   - path: /usr/local/bin/wait-for-rke2.sh
     content: |
@@ -243,6 +250,132 @@ write_files:
       kubectl version --short 2>/dev/null || kubectl version
     owner: root:root
     permissions: '0755'
+
+  # Script to discover LB IP and update TLS-SAN  
+  - path: /usr/local/bin/discover-lb-and-update-tls.sh
+    content: |
+      #!/bin/bash
+      set -e
+
+      CLUSTER_NAME="${cluster_name}"
+      HCLOUD_TOKEN_FILE="/etc/rancher/rke2/.hcloud-token"
+      LOG_FILE="/var/log/rke2-tls-discovery.log"
+      MAX_RETRIES=30
+      RETRY_DELAY=20
+
+      log() {
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
+      }
+
+      log "Starting LB discovery for cluster: $CLUSTER_NAME"
+
+      # Check if token file exists
+      if [ ! -f "$HCLOUD_TOKEN_FILE" ]; then
+        log "INFO: Hetzner token file not found. Skipping LB discovery (token already wiped or not provided)."
+        exit 0
+      fi
+
+      HCLOUD_TOKEN=$(cat "$HCLOUD_TOKEN_FILE")
+
+      # Wait for RKE2 to be ready before we modify config
+      log "Waiting for RKE2 to be stable..."
+      until [ -f /etc/rancher/rke2/rke2.yaml ]; do
+        sleep 5
+      done
+      until /var/lib/rancher/rke2/bin/kubectl get nodes &>/dev/null; do
+        sleep 5
+      done
+      log "RKE2 is stable."
+
+      # Poll Hetzner API for Load Balancer
+      LB_IPV4=""
+      for i in $(seq 1 $MAX_RETRIES); do
+        log "Attempt $i/$MAX_RETRIES: Querying Hetzner API for LB..."
+
+        LB_DATA=$(curl -s -H "Authorization: Bearer $HCLOUD_TOKEN" \
+          "https://api.hetzner.cloud/v1/load_balancers" 2>/dev/null || true)
+
+        if [ -z "$LB_DATA" ]; then
+          log "No response from API, retrying in ${RETRY_DELAY}s..."
+          sleep $RETRY_DELAY
+          continue
+        fi
+
+        # Extract LB IP using jq
+        LB_IPV4=$(echo "$LB_DATA" | jq -r ".load_balancers[] | select(.name == \"$CLUSTER_NAME-api-lb\") | .public_net.ipv4.ip" 2>/dev/null || true)
+
+        if [ -n "$LB_IPV4" ] && [ "$LB_IPV4" != "null" ] && [ "$LB_IPV4" != "" ]; then
+          log "Found Load Balancer IP: $LB_IPV4"
+          break
+        fi
+
+        log "LB not found yet, retrying in ${RETRY_DELAY}s..."
+        sleep $RETRY_DELAY
+      done
+
+      # Always wipe the token immediately, regardless of success
+      log "Wiping Hetzner token from disk..."
+      rm -f "$HCLOUD_TOKEN_FILE"
+      # Also wipe from any shell history/environment
+      unset HCLOUD_TOKEN
+      sync
+
+      if [ -z "$LB_IPV4" ] || [ "$LB_IPV4" = "null" ] || [ "$LB_IPV4" = "" ]; then
+        log "WARNING: Could not discover LB after $MAX_RETRIES attempts."
+        log "TLS-SAN will not include LB IP. kubectl must use CP node IPs directly."
+        log "Token has been wiped from disk."
+        exit 0
+      fi
+
+      # Check if LB IP is already in config
+      if grep -q "^  - $LB_IPV4$" /etc/rancher/rke2/config.yaml 2>/dev/null; then
+        log "LB IP $LB_IPV4 already in TLS-SAN. Token wiped."
+        exit 0
+      fi
+
+      log "Updating RKE2 TLS-SAN with LB IP: $LB_IPV4"
+
+      # Backup config
+      cp /etc/rancher/rke2/config.yaml /etc/rancher/rke2/config.yaml.bak.$(date +%s)
+
+      # Safely inject LB IP into TLS-SAN list
+      # First, find if tls-san already exists
+      if grep -q "^tls-san:" /etc/rancher/rke2/config.yaml; then
+        # tls-san exists, append LB IP after first tls-san block
+        # We use sed to append after the line containing the first CP IP in tls-san
+        sed -i "/^  - ${first_control_plane_ip}/a\  - $LB_IPV4" /etc/rancher/rke2/config.yaml
+      else
+        # No tls-san, append at end of config
+        echo "" >> /etc/rancher/rke2/config.yaml
+        echo "tls-san:" >> /etc/rancher/rke2/config.yaml
+        echo "  - ${first_control_plane_ip}" >> /etc/rancher/rke2/config.yaml
+        echo "  - ${lb_ip}" >> /etc/rancher/rke2/config.yaml
+        echo "  - $LB_IPV4" >> /etc/rancher/rke2/config.yaml
+      fi
+
+      log "New RKE2 config:"
+      grep -A 5 "^tls-san:" /etc/rancher/rke2/config.yaml | tee -a "$LOG_FILE"
+
+      # Ensure token is wiped before restart
+      rm -f "$HCLOUD_TOKEN_FILE" 2>/dev/null || true
+
+      log "Restarting RKE2 to regenerate TLS certificate..."
+      systemctl restart rke2-server
+
+      log "Waiting for RKE2 to restart..."
+      sleep 15
+      until [ -f /etc/rancher/rke2/rke2.yaml ]; do
+        sleep 5
+      done
+      until /var/lib/rancher/rke2/bin/kubectl get nodes &>/dev/null; do
+        sleep 5
+      done
+
+      log "SUCCESS: RKE2 restarted with new TLS certificate including LB IP $LB_IPV4"
+      log "Token has been wiped from disk."
+      log "Log file location: $LOG_FILE"
+    owner: root:root
+    permissions: '0700'
 
 %{ if cis_profile != "" ~}
   # CIS hardening script
@@ -295,6 +428,11 @@ runcmd:
   # Wait for RKE2 to be ready and setup environment
   - /usr/local/bin/wait-for-rke2.sh
 
+  # Discover LB IP and update TLS certificate (background - runs independently)
+  - |
+    echo "Starting LB discovery in background (self-contained, token will be auto-wiped)..."
+    nohup /usr/local/bin/discover-lb-and-update-tls.sh > /var/log/rke2-tls-discovery.nohup 2>&1 &
+
   # Label node with additional information
   - |
     export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
@@ -304,6 +442,7 @@ runcmd:
   # Print completion message
   - echo "=============================================="
   - echo "RKE2 Control Plane setup complete on ${node_name}"
+  - echo "LB discovery running in background (see /var/log/rke2-tls-discovery.log)"
   - echo "=============================================="
 
 final_message: |

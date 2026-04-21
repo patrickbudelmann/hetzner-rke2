@@ -7,6 +7,22 @@ variable "hcloud_token" {
   sensitive   = true
 }
 
+variable "hcloud_token_cloudinit" {
+  description = <<EOT
+Dedicated Hetzner API token for cloud-init LB discovery.
+This token is passed to CP nodes during first boot to discover the LB IP.
+It is wiped from disk after use. You should revoke this token after deployment.
+If not provided, the main hcloud_token is used (same security risk).
+EOT
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+locals {
+  hcloud_token_cloudinit = var.hcloud_token_cloudinit != "" ? var.hcloud_token_cloudinit : var.hcloud_token
+}
+
 variable "region" {
   description = "Hetzner Cloud region (nbg1, fsn1, hel1, ash, hil)"
   type        = string
