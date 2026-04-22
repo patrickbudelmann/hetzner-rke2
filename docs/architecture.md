@@ -101,7 +101,14 @@ Worker Nodes:
 ├── Start RKE2 agent (connect to first CP or DNS endpoint)
 └── Label node
 
-Phase 3: Post-Deployment (Manual)
+Phase 3: RKE2 Auto-Deploy (2-5 minutes after RKE2 ready)
+RKE2 reads /var/lib/rancher/rke2/server/manifests/:
+├── HCCM HelmChart (if enabled)
+├── Hetzner CSI HelmChart (if enabled)
+├── Scality S3 CSI HelmChart + Secret + StorageClass (if enabled)
+└── All other manifests
+
+Phase 4: Post-Deployment (Manual)
 ├── Set up DNS record (if cluster_api_dns is configured)
 ├── Retrieve kubeconfig
 ├── Update kubeconfig with DNS name or LB IP

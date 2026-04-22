@@ -224,6 +224,21 @@ output "csi_install_command" {
   value       = var.enable_csi_driver ? "kubectl apply -f https://raw.githubusercontent.com/hetznercloud/csi-driver/${var.csi_driver_version}/deploy/kubernetes/hcloud-csi.yml" : "CSI auto-install disabled"
 }
 
+output "s3_csi_enabled" {
+  description = "Whether Scality S3 CSI driver is enabled"
+  value       = var.enable_s3_csi_driver
+}
+
+output "s3_csi_endpoint" {
+  description = "S3 endpoint URL used by the Scality CSI driver"
+  value       = var.enable_s3_csi_driver ? local.s3_endpoint : "S3 CSI driver not enabled"
+}
+
+output "check_s3_csi_command" {
+  description = "Command to check Scality S3 CSI driver status"
+  value       = var.enable_s3_csi_driver ? "kubectl get pods -n kube-system -l app=scality-mountpoint-s3-csi-driver" : "S3 CSI driver not enabled"
+}
+
 # =============================================================================
 # Cluster Summary
 # =============================================================================
@@ -263,6 +278,7 @@ ${var.cluster_api_dns != "" ? "  Create an A/AAAA record: ${var.cluster_api_dns}
 Features Enabled:
   HCCM:          ${var.enable_hccm ? "Yes (${var.hccm_version})" : "No"}
   CSI Driver:    ${var.enable_csi_driver ? "Yes (${var.csi_driver_version})" : "No"}
+  S3 CSI Driver: ${var.enable_s3_csi_driver ? "Yes (${var.s3_csi_version}) → ${local.s3_endpoint}" : "No"}
   Auto Updates:  ${var.enable_auto_updates ? "Yes" : "No"}
   CIS Hardening: ${var.rke2_cis_profile != "" ? var.rke2_cis_profile : "No"}
 

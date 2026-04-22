@@ -278,6 +278,72 @@ variable "csi_driver_version" {
 }
 
 # =============================================================================
+# Scality S3 CSI Driver (Optional)
+# =============================================================================
+variable "enable_s3_csi_driver" {
+  description = "Enable Scality Mountpoint-S3 CSI driver for S3-backed volumes"
+  type        = bool
+  default     = false
+}
+
+variable "s3_csi_version" {
+  description = "Scality S3 CSI driver Helm chart version"
+  type        = string
+  default     = "2.2.0"
+}
+
+variable "s3_endpoint_url" {
+  description = "S3-compatible endpoint URL. If empty, derived from region: https://<region>.your-objectstorage.com"
+  type        = string
+  default     = ""
+}
+
+variable "s3_region" {
+  description = "S3 region. If empty, uses the Hetzner region variable."
+  type        = string
+  default     = ""
+}
+
+variable "s3_access_key_id" {
+  description = "S3 access key ID for Hetzner Object Storage"
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "s3_secret_access_key" {
+  description = "S3 secret access key for Hetzner Object Storage"
+  type        = string
+  sensitive   = true
+  default     = ""
+
+  validation {
+    condition     = !(var.enable_s3_csi_driver && var.s3_secret_access_key == "")
+    error_message = "s3_secret_access_key is required when enable_s3_csi_driver is true."
+  }
+}
+
+# Validation: S3 CSI requires Hetzner CSI to be enabled
+resource "null_resource" "s3_csi_validation" {
+  lifecycle {
+    precondition {
+      condition     = !var.enable_s3_csi_driver || var.enable_csi_driver
+      error_message = "enable_csi_driver must be true when enable_s3_csi_driver is true."
+    }
+
+    precondition {
+      condition     = !var.enable_s3_csi_driver || var.s3_access_key_id != ""
+      error_message = "s3_access_key_id is required when enable_s3_csi_driver is true."
+    }
+
+    precondition {
+      condition     = !var.enable_s3_csi_driver || var.s3_secret_access_key != ""
+      error_message = "s3_secret_access_key is required when enable_s3_csi_driver is true."
+    }
+  }
+}
+
+# =============================================================================
 # Load Balancer Configuration
 # =============================================================================
 variable "lb_type" {
@@ -414,6 +480,12 @@ locals {
 
   # RKE2 config directory
   rke2_config_dir = "/etc/rancher/rke2"
+
+  # S3 endpoint URL (derived from region if not explicitly set)
+  s3_endpoint = var.s3_endpoint_url != "" ? var.s3_endpoint_url : "https://${var.s3_region != "" ? var.s3_region : var.region}.your-objectstorage.com"
+
+  # S3 region (defaults to Hetzner region)
+  s3_region = var.s3_region != "" ? var.s3_region : var.region
 }
 
 # Generate random token if not provided

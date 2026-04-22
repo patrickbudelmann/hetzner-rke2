@@ -131,6 +131,12 @@ Cloud-init is processed by Terraform's `templatefile()`. These variables are inj
 | `cni` | `var.rke2_cni` | CNI plugin selection |
 | `enable_hccm` | `var.enable_hccm` | Enable HCCM installation |
 | `hcloud_token` | `var.hcloud_token` | Hetzner API token for HCCM |
+| `enable_s3_csi` | `var.enable_s3_csi_driver` | Enable Scality S3 CSI driver |
+| `s3_csi_version` | `var.s3_csi_version` | S3 CSI chart version |
+| `s3_endpoint_url` | Derived from region | S3-compatible endpoint URL |
+| `s3_region` | Derived from region | S3 region |
+| `s3_access_key_id` | `var.s3_access_key_id` | S3 access key |
+| `s3_secret_access_key` | `var.s3_secret_access_key` | S3 secret key |
 
 ### Worker Template Variables
 

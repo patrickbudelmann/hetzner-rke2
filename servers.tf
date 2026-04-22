@@ -61,6 +61,12 @@ resource "hcloud_server" "control_plane" {
     enable_auto_updates       = var.enable_auto_updates
     taints                    = var.control_plane_taints
     labels                    = var.control_plane_labels
+    enable_s3_csi             = var.enable_s3_csi_driver
+    s3_csi_version            = var.s3_csi_version
+    s3_endpoint_url           = local.s3_endpoint
+    s3_region                 = local.s3_region
+    s3_access_key_id          = var.s3_access_key_id
+    s3_secret_access_key      = var.s3_secret_access_key
   })
 
   lifecycle {

@@ -94,6 +94,21 @@ lb_type     = "lb11"  # lb11 (small), lb21 (medium), lb31 (large)
 lb_algorithm = "round_robin"
 
 # =============================================================================
+# Scality S3 CSI Driver (Optional)
+# Requires Hetzner Object Storage credentials.
+# If enabled, Hetzner CSI (enable_csi_driver) must also be enabled.
+# =============================================================================
+# enable_s3_csi_driver     = true
+# s3_access_key_id         = "your-hetzner-s3-access-key-id"
+# s3_secret_access_key     = "your-hetzner-s3-secret-access-key"
+
+# Optional: override the S3 endpoint (derived from region by default)
+# s3_endpoint_url = "https://fsn1.your-objectstorage.com"
+
+# Optional: override the S3 region (defaults to the Hetzner region variable)
+# s3_region = "fsn1"
+
+# =============================================================================
 # Backup Configuration
 # =============================================================================
 enable_backups = true

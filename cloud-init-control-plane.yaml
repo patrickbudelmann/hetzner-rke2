@@ -172,6 +172,106 @@ write_files:
     permissions: '0600'
 %{ endif ~}
 
+%{ if enable_s3_csi ~}
+  # Scality S3 CSI credentials secret
+  - path: /var/lib/rancher/rke2/server/manifests/s3-csi-secret.yaml
+    content: |
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: s3-secret
+        namespace: kube-system
+      type: Opaque
+      stringData:
+        access_key_id: "${s3_access_key_id}"
+        secret_access_key: "${s3_secret_access_key}"
+    owner: root:root
+    permissions: '0600'
+
+  # Scality Mountpoint-S3 CSI Driver HelmChart
+  - path: /var/lib/rancher/rke2/server/manifests/scality-s3-csi.yaml
+    content: |
+      apiVersion: helm.cattle.io/v1
+      kind: HelmChart
+      metadata:
+        name: scality-mountpoint-s3-csi-driver
+        namespace: kube-system
+      spec:
+        repo: oci://ghcr.io/scality/mountpoint-s3-csi-driver/helm-charts
+        chart: scality-mountpoint-s3-csi-driver
+        version: "${s3_csi_version}"
+        targetNamespace: kube-system
+        createNamespace: false
+        valuesContent: |-
+          s3:
+            endpointUrl: "${s3_endpoint_url}"
+            region: "${s3_region}"
+          s3CredentialSecret:
+            name: s3-secret
+          node:
+            serviceAccount:
+              create: true
+            tolerateAllTaints: false
+            defaultTolerations: true
+            resources:
+              requests:
+                cpu: 10m
+                memory: 40Mi
+              limits:
+                memory: 256Mi
+          controller:
+            serviceAccount:
+              create: true
+          sidecars:
+            nodeDriverRegistrar:
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 16Mi
+                limits:
+                  memory: 64Mi
+            livenessProbe:
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 16Mi
+                limits:
+                  memory: 64Mi
+            csiProvisioner:
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 16Mi
+                limits:
+                  memory: 64Mi
+    owner: root:root
+    permissions: '0600'
+
+  # S3 StorageClass for dynamic provisioning
+  - path: /var/lib/rancher/rke2/server/manifests/s3-storageclass.yaml
+    content: |
+      apiVersion: storage.k8s.io/v1
+      kind: StorageClass
+      metadata:
+        name: s3
+        annotations:
+          storageclass.kubernetes.io/is-default-class: "false"
+      provisioner: s3.csi.scality.com
+      reclaimPolicy: Delete
+      volumeBindingMode: Immediate
+      parameters:
+        csi.storage.k8s.io/provisioner-secret-name: s3-secret
+        csi.storage.k8s.io/provisioner-secret-namespace: kube-system
+        csi.storage.k8s.io/node-publish-secret-name: s3-secret
+        csi.storage.k8s.io/node-publish-secret-namespace: kube-system
+      mountOptions:
+        - allow-delete
+        - allow-other
+        - region=${s3_region}
+    owner: root:root
+    permissions: '0600'
+%{ endif ~}
+
 %{ if enable_auto_updates ~}
   - path: /etc/apt/apt.conf.d/50unattended-upgrades
     content: |
