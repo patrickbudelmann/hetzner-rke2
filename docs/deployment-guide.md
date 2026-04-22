@@ -34,15 +34,15 @@ cat ~/.ssh/id_ed25519.pub
 # Output: ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAID... your-email@example.com
 ```
 
-### Create Hetzner API Tokens
+### Create Hetzner API Token
 
 1. Log in to [Hetzner Cloud Console](https://console.hetzner.cloud/)
 2. Select your project
 3. Navigate to **Security** → **API Tokens**
-4. Create two tokens:
-   - **Main Token**: Name it `terraform-main` (for Terraform resource creation)
-   - **Temporary Token**: Name it `terraform-temp-lb-discovery` (for cloud-init)
-5. **SAVE BOTH TOKEN VALUES** - you can't see them again!
+4. Create a token:
+   - **Name**: `terraform-main`
+   - **Permissions**: Read & Write
+5. **SAVE THE TOKEN VALUE** - you can't see it again!
 
 ## Step 2: Configure terraform.tfvars
 
@@ -60,14 +60,24 @@ nano terraform.tfvars  # or vim, or your preferred editor
 # Required: Main Hetzner API token
 hcloud_token = "your-main-token-here"
 
-# Recommended: Temporary token for cloud-init (revoke after deployment!)
-hcloud_token_cloudinit = "your-temporary-token-here"
-
 # Required: SSH public key
 ssh_public_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAID... your-email@example.com"
 
 # CRITICAL: Restrict SSH to YOUR IP ONLY
 allowed_ssh_cidr = ["YOUR.PUBLIC.IP.ADDRESS/32"]
+```
+
+### DNS Configuration (Recommended)
+
+```hcl
+# DNS name for the Kubernetes API endpoint
+# This name will be baked into the RKE2 TLS certificate
+cluster_api_dns = "k8s.example.com"
+```
+
+**After deployment**, create a DNS A record:
+```
+k8s.example.com  →  <LOAD_BALANCER_IP>
 ```
 
 ### Optional Configuration
@@ -135,9 +145,7 @@ Type `yes` when prompted.
 4:00  - Additional CP nodes joining
 5:00  - Worker nodes joining
 6:00  - Load balancer created
-7:00  - Cloud-init LB discovery starts (polling Hetzner API)
-8:00  - LB IP discovered, TLS-SAN updated
-9:00  - RKE2 restarting with new certificate
+8:00  - RKE2 fully started on all nodes
 10:00 - Cluster fully ready
 ```
 
@@ -160,16 +168,26 @@ scp -i ~/.ssh/id_ed25519 root@$CP_IP:/etc/rancher/rke2/rke2.yaml ./kubeconfig.ya
 terraform output -raw get_kubeconfig_command
 ```
 
-### Update kubeconfig to use Load Balancer
+### Update kubeconfig server address
 
+**If you configured `cluster_api_dns`:**
+```bash
+# Update kubeconfig to use DNS name (macOS)
+sed -i '' "s/127.0.0.1/${var.cluster_api_dns}/g" kubeconfig.yaml
+
+# Update kubeconfig to use DNS name (Linux)
+sed -i "s/127.0.0.1/${var.cluster_api_dns}/g" kubeconfig.yaml
+```
+
+**If you did NOT configure `cluster_api_dns`:**
 ```bash
 # Get LB IP
 LB_IP=$(terraform output -raw load_balancer_public_ipv4)
 
-# Update kubeconfig (macOS)
+# Update kubeconfig to use LB IP (macOS)
 sed -i '' "s/127.0.0.1/$LB_IP/g" kubeconfig.yaml
 
-# Update kubeconfig (Linux)
+# Update kubeconfig to use LB IP (Linux)
 sed -i "s/127.0.0.1/$LB_IP/g" kubeconfig.yaml
 ```
 
@@ -217,16 +235,7 @@ kubectl get storageclass
 kubectl get pods -n kube-system
 ```
 
-## Step 8: Revoke Temporary Token (CRITICAL!)
-
-```bash
-# See the reminder
-terraform output token_revocation_reminder
-
-# Then go to Hetzner Console and delete the temporary token
-```
-
-## Step 9: Deploy Applications
+## Step 8: Deploy Applications
 
 Your cluster is ready! Deploy your applications:
 
@@ -268,9 +277,6 @@ journalctl -u rke2-server -f
 
 # Check cloud-init logs
 cat /var/log/cloud-init-output.log
-
-# Check TLS discovery log
-cat /var/log/rke2-tls-discovery.log
 ```
 
 ## Scaling the Cluster

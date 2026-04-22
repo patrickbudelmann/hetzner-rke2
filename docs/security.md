@@ -5,154 +5,64 @@
 This project implements a **security-first architecture** with these key principles:
 
 - No SSH provisioners during deployment (encrypted keys work)
-- Temporary API tokens for cloud-init (wiped after use)
 - Minimal WAN exposure (private network for all internal traffic)
 - Firewall rules with strict port restrictions
+- DNS-based API endpoint (stable TLS certificate)
 - Optional CIS hardening for production environments
 
 ## API Token Management
 
-### The Two-Token Strategy
+### Main Token (`hcloud_token`)
 
-We use two Hetzner API tokens with different purposes:
+The Hetzner Cloud API token used by Terraform to create resources (servers, networks, load balancers, firewalls):
 
-#### Token A: Main Token (`hcloud_token`)
-- **Used for**: Terraform resource provisioning
-- **Lifespan**: Long-term (do NOT revoke after deployment)
-- **Location**: Your local machine (terraform.tfvars)
-- **Scope**: Full project access (creates servers, networks, LBs)
+- **Used for**: Terraform resource provisioning AND HCCM/CSI cluster integration
+- **Lifespan**: Long-term (do NOT revoke after deployment - HCCM needs it!)
+- **Location**: Your local machine (`terraform.tfvars`) and inside the cluster (HCCM Secret)
+- **Scope**: Full project access
 
 ```hcl
 # terraform.tfvars
 hcloud_token = "your-main-token-here"
 ```
 
-#### Token B: Temporary Token (`hcloud_token_cloudinit`)
-- **Used for**: Cloud-init LB discovery only (runs inside CP nodes)
-- **Lifespan**: Temporary (revoke after deployment!)
-- **Location**: Written to CP node disk, wiped after use
-- **Risk**: Lower if properly managed and revoked
+**Important**: This token is stored in the Kubernetes cluster as a Secret for HCCM/CSI to manage resources. Do NOT revoke it or HCCM will break.
 
-```hcl
-# terraform.tfvars
-hcloud_token_cloudinit = "your-temporary-token-here"
+### Token Storage in Cluster
+
+The token is stored in the cluster by cloud-init via a Kubernetes manifest:
+
+```yaml
+# /var/lib/rancher/rke2/server/manifests/hcloud-secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: hcloud
+  namespace: kube-system
+type: Opaque
+stringData:
+  token: "<your-token>"
+  network: "<network-id>"
 ```
 
-### Why Two Tokens?
+This Secret is secured by Kubernetes RBAC and only accessible to HCCM and CSI pods.
 
-Hetzner does NOT support API tokens with different permission levels (no read-only tokens).
-Every token has full project access.
+### Token Rotation
 
-The two-token strategy provides:
-- **Isolation**: Compromise of temp token doesn't affect main token
-- **Revocability**: Temp token is immediately revoked after deployment
-- **Auditing**: Easy to identify which token was used where
-- **Limited exposure**: Temp token only exists on disk for ~10 minutes
+If you need to rotate the token:
 
-### Token Lifecycle
+1. Create a new token in Hetzner Console
+2. Update `terraform.tfvars` with the new token
+3. Update the Secret in the cluster:
+   ```bash
+   kubectl patch secret hcloud -n kube-system \
+     --type='json' \
+     -p='[{"op": "replace", "path": "/data/token", "value":"'<base64-encoded-new-token>'"}]'
+   ```
+4. Restart HCCM and CSI pods
+5. Revoke the old token in Hetzner Console
 
-```
-Before Deployment
-│
-├── Hetzner Console → Create "terraform-main" token
-│   └── Store in: hcloud_token variable
-│
-├── Hetzner Console → Create "terraform-temp-lb-discovery" token
-│   └── Store in: hcloud_token_cloudinit variable
-│
-During Deployment
-│
-├── Terraform uses main token to create resources
-│
-└── CP nodes receive temp token via cloud-init
-    └── Token written to: /etc/rancher/rke2/.hcloud-token
-│
-After LB Discovered
-│
-└── CP node script detects LB IP
-    └── Updates RKE2 config
-    └── Restarts RKE2
-    └── WIPES token file → /etc/rancher/rke2/.hcloud-token deleted
-│
-After Deployment (CRITICAL!)
-│
-└── Hetzner Console → Revoke "terraform-temp-lb-discovery" token
-    └── Zero residual risk
-```
-
-### Creating the Temporary Token
-
-#### Method 1: Hetzner Cloud Console (Recommended)
-
-1. Log in to [Hetzner Cloud Console](https://console.hetzner.cloud/)
-2. Select your project
-3. Navigate to **Security** → **API Tokens**
-4. Click **Generate API Token**
-5. Name it: `rke2-temp-<cluster-name>`
-6. Copy the token value
-7. Paste into `terraform.tfvars`
-
-#### Method 2: Using hcloud CLI (If Installed)
-
-```bash
-# Install hcloud CLI (if not already)
-brew install hcloud  # macOS
-# or
-apt install hcloud   # Debian/Ubuntu
-
-# Login
-hcloud context create my-project
-
-# Create token
-hcloud token create --name rke2-temp-production
-```
-
-### Revoking the Temporary Token
-
-**This is CRITICAL - do not skip!**
-
-#### Via Console:
-1. Log in to [Hetzner Cloud Console](https://console.hetzner.cloud/)
-2. Navigate to **Security** → **API Tokens**
-3. Find your temporary token (`rke2-temp-*`)
-4. Click **Delete** or **Revoke**
-
-#### Via hcloud CLI:
-```bash
-hcloud token list
-hcloud token delete <token-id>
-```
-
-#### Via Terraform Output:
-```bash
-terraform output token_revocation_reminder
-```
-
-### Verifying Token Was Wiped
-
-```bash
-# SSH to a control plane node
-ssh -i ~/.ssh/id_ed25519 root@<CP_IP>
-
-# Check token file is gone
-ls -la /etc/rancher/rke2/.hcloud-token
-# Expected: No such file or directory
-
-# Check discovery log
-head -20 /var/log/rke2-tls-discovery.log
-# Expected: Lines showing "Wiping Hetzner token from disk..."
-```
-
-### Token Without Temporary Token (Fallback)
-
-If you don't provide `hcloud_token_cloudinit`, the main `hcloud_token` is used. This works but:
-- ⚠️ Your main token is exposed on CP nodes
-- ⚠️ Cannot revoke it without breaking HCCM/CSI
-- ⚠️ Higher security risk
-
-**Recommendation**: Always use the two-token strategy for production!
-
-## Firewall Configuration
+## DNS-Based API Endpoint
 
 ### Control Plane Firewall Rules
 
@@ -307,8 +217,9 @@ plugins:
 
 Before deploying to production:
 
-- [ ] Created separate main and temporary Hetzner tokens
+- [ ] Created Hetzner API token for Terraform
 - [ ] Restricted `allowed_ssh_cidr` to your IP only
+- [ ] Set `cluster_api_dns` for a stable API endpoint (strongly recommended)
 - [ ] Enabled CIS hardening (`rke2_cis_profile = "cis"`)
 - [ ] Enabled automatic updates
 - [ ] Enabled etcd backups
@@ -320,9 +231,8 @@ Before deploying to production:
 
 After deployment:
 
-- [ ] Revoked the temporary Hetzner token
-- [ ] Verified token was wiped from CP nodes
+- [ ] Created DNS A record for `cluster_api_dns` pointing to LB IP
 - [ ] Retrieved and secured kubeconfig
+- [ ] Updated kubeconfig to use DNS name (or LB IP if no DNS)
 - [ ] Verified all nodes are `Ready`
 - [ ] Checked HCCM and CSI are running
-- [ ] Reviewed `terraform output token_revocation_reminder`

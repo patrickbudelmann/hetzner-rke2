@@ -7,22 +7,6 @@ variable "hcloud_token" {
   sensitive   = true
 }
 
-variable "hcloud_token_cloudinit" {
-  description = <<EOT
-Dedicated Hetzner API token for cloud-init LB discovery.
-This token is passed to CP nodes during first boot to discover the LB IP.
-It is wiped from disk after use. You should revoke this token after deployment.
-If not provided, the main hcloud_token is used (same security risk).
-EOT
-  type        = string
-  sensitive   = true
-  default     = ""
-}
-
-locals {
-  hcloud_token_cloudinit = var.hcloud_token_cloudinit != "" ? var.hcloud_token_cloudinit : var.hcloud_token
-}
-
 variable "region" {
   description = "Hetzner Cloud region (nbg1, fsn1, hel1, ash, hil)"
   type        = string
@@ -196,6 +180,20 @@ variable "enable_nodeport_access" {
   description = "Enable NodePort service access from external CIDRs"
   type        = bool
   default     = false
+}
+
+# =============================================================================
+# API Endpoint Configuration
+# =============================================================================
+variable "cluster_api_dns" {
+  description = <<-EOT
+    DNS name for the Kubernetes API endpoint (e.g. k8s.example.com).
+    This DNS name is added to the RKE2 TLS-SAN during certificate generation.
+    Create a DNS A/AAAA record pointing to the Load Balancer IP after deployment.
+    If not set, kubectl must use a control plane node IP directly.
+  EOT
+  type        = string
+  default     = ""
 }
 
 # =============================================================================
@@ -385,7 +383,6 @@ variable "enable_auto_updates" {
 # Local Values
 # =============================================================================
 locals {
-  # Generate a random token if not provided
   rke2_token = var.rke2_token != "" ? var.rke2_token : random_password.rke2_token[0].result
 
   # Determine first control plane IP

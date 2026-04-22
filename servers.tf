@@ -20,27 +20,20 @@ resource "hcloud_server" "control_plane" {
 
   ssh_keys = [hcloud_ssh_key.rke2.id]
 
-  # Attach to private network
   network {
     network_id = hcloud_network.rke2.id
     ip         = cidrhost(var.control_plane_subnet, count.index + 10)
   }
 
-  # Attach firewall
   firewall_ids = [hcloud_firewall.control_plane.id]
+  labels       = local.control_plane_labels
 
-  # Labels for resource management
-  labels = local.control_plane_labels
-
-  # Ensure network is ready before creating servers
   depends_on = [
     hcloud_network_subnet.control_plane,
   ]
 
-  # Backup configuration for control plane nodes
   backups = var.enable_backups
 
-  # Cloud-init user data for RKE2 installation
   user_data = templatefile("${path.module}/cloud-init-control-plane.yaml", {
     rke2_version              = var.rke2_version
     rke2_token                = local.rke2_token
@@ -50,8 +43,8 @@ resource "hcloud_server" "control_plane" {
     region                    = var.region
     is_first_server           = count.index == 0
     first_control_plane_ip    = local.first_control_plane_ip
-    lb_ip                     = cidrhost(var.load_balancer_subnet, 10)
     private_ip                = cidrhost(var.control_plane_subnet, count.index + 10)
+    cluster_api_dns           = var.cluster_api_dns
     cni                       = var.rke2_cni
     cis_profile               = var.rke2_cis_profile
     disable_etcd_snapshots    = var.rke2_disable_etcd_snapshots
@@ -63,7 +56,6 @@ resource "hcloud_server" "control_plane" {
     csi_version               = var.csi_driver_version
     csi_encryption_passphrase = var.enable_csi_driver && length(random_password.hccm_encryption_passphrase) > 0 ? random_password.hccm_encryption_passphrase[0].result : ""
     hcloud_token              = var.hcloud_token
-    hcloud_token_cloudinit    = local.hcloud_token_cloudinit
     network_id                = hcloud_network.rke2.id
     network_name              = hcloud_network.rke2.name
     enable_auto_updates       = var.enable_auto_updates
@@ -73,9 +65,9 @@ resource "hcloud_server" "control_plane" {
 
   lifecycle {
     ignore_changes = [
-      user_data,     # Don't recreate on cloud-init changes
-      ssh_keys,      # Allow manual SSH key management
-      image,         # Don't recreate on image updates
+      user_data,
+      ssh_keys,
+      image,
     ]
     prevent_destroy = false
   }
@@ -98,7 +90,7 @@ resource "hcloud_volume" "control_plane" {
   })
 
   lifecycle {
-    prevent_destroy = true  # Protect persistent data
+    prevent_destroy = true
   }
 }
 
@@ -115,38 +107,33 @@ resource "hcloud_server" "workers" {
 
   ssh_keys = [hcloud_ssh_key.rke2.id]
 
-  # Attach to private network
   network {
     network_id = hcloud_network.rke2.id
     ip         = cidrhost(var.worker_subnet, count.index + 10)
   }
 
-  # Attach firewall
   firewall_ids = [hcloud_firewall.workers.id]
+  labels       = local.worker_labels
 
-  # Labels for resource management
-  labels = local.worker_labels
-
-  # Ensure control plane is ready and network is created
   depends_on = [
     hcloud_server.control_plane,
     hcloud_network_subnet.workers,
   ]
 
-  # Cloud-init user data for RKE2 agent installation
   user_data = templatefile("${path.module}/cloud-init-worker.yaml", {
-    rke2_version        = var.rke2_version
-    rke2_token          = local.rke2_token
-    node_name           = "${var.cluster_name}-worker-${count.index + 1}"
-    cluster_name        = var.cluster_name
-    server_type         = var.worker_server_type
-    region              = var.region
+    rke2_version           = var.rke2_version
+    rke2_token             = local.rke2_token
+    node_name              = "${var.cluster_name}-worker-${count.index + 1}"
+    cluster_name           = var.cluster_name
+    server_type            = var.worker_server_type
+    region                 = var.region
     first_control_plane_ip = local.first_control_plane_ip
-    private_ip          = cidrhost(var.worker_subnet, count.index + 10)
-    enable_hccm         = var.enable_hccm
-    enable_auto_updates = var.enable_auto_updates
-    taints              = var.worker_taints
-    labels              = var.worker_labels
+    server_url             = var.cluster_api_dns != "" ? var.cluster_api_dns : local.first_control_plane_ip
+    private_ip             = cidrhost(var.worker_subnet, count.index + 10)
+    enable_hccm            = var.enable_hccm
+    enable_auto_updates    = var.enable_auto_updates
+    taints                 = var.worker_taints
+    labels                 = var.worker_labels
   })
 
   lifecycle {
@@ -179,9 +166,3 @@ resource "hcloud_volume" "workers" {
     prevent_destroy = true
   }
 }
-
-# =============================================================================
-# Network Attachments (Explicit for better control)
-# =============================================================================
-# Note: Network attachments are handled within the server resources above
-# but we use explicit IP assignments for predictability

@@ -88,30 +88,23 @@ First CP Node:
 ├── Install RKE2 server
 ├── Start RKE2 (cluster-init mode)
 ├── Wait for RKE2 ready (kubeconfig exists, API responsive)
-├── Background: Start LB discovery script
-│   ├── Poll Hetzner API (30 retries, 20s delay)
-│   ├── Extract LB public IPv4
-│   ├── Update RKE2 config TLS-SAN
-│   ├── Restart RKE2 to regenerate certificate
-│   └── WIPE Hetzner token from disk
 └── Label node with Hetzner metadata
 
 Other CP Nodes:
 ├── Install RKE2 server
 ├── Start RKE2 (join mode, connect to first CP)
 ├── Wait for RKE2 ready
-├── Background: Start LB discovery script (same logic)
 └── Label node
 
 Worker Nodes:
 ├── Install RKE2 agent
-├── Start RKE2 agent (connect to first CP)
+├── Start RKE2 agent (connect to first CP or DNS endpoint)
 └── Label node
 
 Phase 3: Post-Deployment (Manual)
-├── Revoke temporary Hetzner token (CRITICAL!)
+├── Set up DNS record (if cluster_api_dns is configured)
 ├── Retrieve kubeconfig
-├── Update kubeconfig with LB IP
+├── Update kubeconfig with DNS name or LB IP
 └── Deploy applications
 ```
 
@@ -161,12 +154,13 @@ Terraform → Cloud-init user_data → Server self-configures
 Benefit: No SSH access needed during deployment, encrypted keys work
 ```
 
-### Why Temporary Token Pattern?
+### Why DNS-Based TLS-SAN?
 
-- Hetzner API tokens are all-powerful (no read-only scopes)
-- We need to query the API from inside servers (for LB discovery)
-- Temporary token is created separately, used once, then revoked
-- Limits exposure window to ~10 minutes (deployment time)
+- RKE2 generates TLS certificates at first startup
+- The certificate must include all names/IPs clients will use
+- Using a DNS name (e.g., `k8s.example.com`) provides a stable endpoint
+- The DNS name is baked into the certificate during installation
+- After deployment, create a DNS A record pointing to the LB IP
 
 ### Why No SSH During Deployment?
 

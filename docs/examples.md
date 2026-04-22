@@ -22,7 +22,6 @@ For local development and testing. Single CP node, 1 worker, minimal resources.
 ```hcl
 # Required
 hcloud_token = "your-main-token"
-hcloud_token_cloudinit = "your-temp-token"
 ssh_public_key = "ssh-ed25519 AAA..."
 allowed_ssh_cidr = ["YOUR.IP/32"]
 
@@ -71,7 +70,6 @@ For small production workloads. 3 CP nodes for HA, 2 workers.
 ```hcl
 # Credentials
 hcloud_token = "your-main-token"
-hcloud_token_cloudinit = "your-temp-token"
 ssh_public_key = "ssh-ed25519 AAA..."
 allowed_ssh_cidr = ["YOUR.IP/32"]
 
@@ -131,7 +129,6 @@ For production with high availability and larger workloads.
 ```hcl
 # Credentials
 hcloud_token = "your-main-token"
-hcloud_token_cloudinit = "your-temp-token"
 ssh_public_key = "ssh-ed25519 AAA..."
 allowed_ssh_cidr = ["YOUR.IP/32"]
 
@@ -210,7 +207,6 @@ For CI/CD pipelines and temporary testing.
 ```hcl
 # Credentials
 hcloud_token = "your-main-token"
-hcloud_token_cloudinit = "your-temp-token"
 ssh_public_key = "ssh-ed25519 AAA..."
 allowed_ssh_cidr = ["YOUR.IP/32"]
 
@@ -256,7 +252,6 @@ For compliance-heavy environments.
 ```hcl
 # Credentials
 hcloud_token = "your-main-token"
-hcloud_token_cloudinit = "your-temp-token"
 ssh_public_key = "ssh-ed25519 AAA..."
 allowed_ssh_cidr = ["YOUR.OFFICE.IP/32"]
 

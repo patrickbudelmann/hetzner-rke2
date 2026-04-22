@@ -13,11 +13,6 @@ packages:
   - qemu-guest-agent
   - iptables-persistent
 
-# Enable qemu-guest-agent for better Hetzner integration
-runcmd:
-  - systemctl enable qemu-guest-agent
-  - systemctl start qemu-guest-agent
-
 write_files:
   # RKE2 main configuration file
   - path: /etc/rancher/rke2/config.yaml
@@ -41,7 +36,9 @@ write_files:
       tls-san:
         - ${private_ip}
         - ${first_control_plane_ip}
-        - ${lb_ip}
+%{ if cluster_api_dns != "" ~}
+        - ${cluster_api_dns}
+%{ endif ~}
       cni: ${cni}
       cluster-cidr: 10.42.0.0/16
       service-cidr: 10.43.0.0/16
@@ -67,14 +64,12 @@ write_files:
     permissions: '0600'
 
 %{ if is_first_server ~}
-  # First server initialization
   - path: /etc/rancher/rke2/config.yaml.d/90-first-server.yaml
     content: |
       cluster-init: true
     owner: root:root
     permissions: '0600'
 %{ else ~}
-  # Additional servers join configuration
   - path: /etc/rancher/rke2/config.yaml.d/90-join-server.yaml
     content: |
       server: https://${first_control_plane_ip}:9345
@@ -83,7 +78,6 @@ write_files:
 %{ endif ~}
 
 %{ if enable_hccm ~}
-  # HCCM secret manifest - applied automatically by RKE2
   - path: /var/lib/rancher/rke2/server/manifests/hcloud-secret.yaml
     content: |
       apiVersion: v1
@@ -98,7 +92,6 @@ write_files:
     owner: root:root
     permissions: '0600'
 
-  # HCCM deployment manifest - applied automatically by RKE2
   - path: /var/lib/rancher/rke2/server/manifests/hcloud-cloud-controller-manager.yaml
     content: |
       apiVersion: helm.cattle.io/v1
@@ -132,7 +125,6 @@ write_files:
 %{ endif ~}
 
 %{ if enable_csi ~}
-  # Hetzner CSI driver manifest
   - path: /var/lib/rancher/rke2/server/manifests/hcloud-csi.yaml
     content: |
       apiVersion: helm.cattle.io/v1
@@ -166,7 +158,6 @@ write_files:
     owner: root:root
     permissions: '0600'
 
-  # CSI encryption secret
   - path: /var/lib/rancher/rke2/server/manifests/hcloud-csi-secret.yaml
     content: |
       apiVersion: v1
@@ -182,7 +173,6 @@ write_files:
 %{ endif ~}
 
 %{ if enable_auto_updates ~}
-  # Enable automatic security updates
   - path: /etc/apt/apt.conf.d/50unattended-upgrades
     content: |
       Unattended-Upgrade::Allowed-Origins {
@@ -207,14 +197,6 @@ write_files:
     permissions: '0644'
 %{ endif ~}
 
-  # Temporary Hetzner token for LB discovery (will be wiped after use)
-  - path: /etc/rancher/rke2/.hcloud-token
-    content: |
-      ${hcloud_token_cloudinit}
-    owner: root:root
-    permissions: '0600'
-
-  # Script to wait for RKE2 and setup kubeconfig
   - path: /usr/local/bin/wait-for-rke2.sh
     content: |
       #!/bin/bash
@@ -226,7 +208,6 @@ write_files:
         sleep 5
       done
 
-      # Wait for API server to be responsive
       export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
       until kubectl get nodes &>/dev/null; do
         echo "  - Waiting for API server..."
@@ -235,12 +216,10 @@ write_files:
 
       echo "RKE2 is ready!"
 
-      # Setup kubeconfig for root
       mkdir -p /root/.kube
       cp /etc/rancher/rke2/rke2.yaml /root/.kube/config
       chmod 600 /root/.kube/config
 
-      # Create symlinks for binaries
       ln -sf /var/lib/rancher/rke2/bin/kubectl /usr/local/bin/kubectl
       ln -sf /var/lib/rancher/rke2/bin/crictl /usr/local/bin/crictl
       ln -sf /var/lib/rancher/rke2/bin/ctr /usr/local/bin/ctr
@@ -251,134 +230,7 @@ write_files:
     owner: root:root
     permissions: '0755'
 
-  # Script to discover LB IP and update TLS-SAN  
-  - path: /usr/local/bin/discover-lb-and-update-tls.sh
-    content: |
-      #!/bin/bash
-      set -e
-
-      CLUSTER_NAME="${cluster_name}"
-      HCLOUD_TOKEN_FILE="/etc/rancher/rke2/.hcloud-token"
-      LOG_FILE="/var/log/rke2-tls-discovery.log"
-      MAX_RETRIES=30
-      RETRY_DELAY=20
-
-      log() {
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
-      }
-
-      log "Starting LB discovery for cluster: $CLUSTER_NAME"
-
-      # Check if token file exists
-      if [ ! -f "$HCLOUD_TOKEN_FILE" ]; then
-        log "INFO: Hetzner token file not found. Skipping LB discovery (token already wiped or not provided)."
-        exit 0
-      fi
-
-      HCLOUD_TOKEN=$(cat "$HCLOUD_TOKEN_FILE")
-
-      # Wait for RKE2 to be ready before we modify config
-      log "Waiting for RKE2 to be stable..."
-      until [ -f /etc/rancher/rke2/rke2.yaml ]; do
-        sleep 5
-      done
-      until /var/lib/rancher/rke2/bin/kubectl get nodes &>/dev/null; do
-        sleep 5
-      done
-      log "RKE2 is stable."
-
-      # Poll Hetzner API for Load Balancer
-      LB_IPV4=""
-      for i in $(seq 1 $MAX_RETRIES); do
-        log "Attempt $i/$MAX_RETRIES: Querying Hetzner API for LB..."
-
-        LB_DATA=$(curl -s -H "Authorization: Bearer $HCLOUD_TOKEN" \
-          "https://api.hetzner.cloud/v1/load_balancers" 2>/dev/null || true)
-
-        if [ -z "$LB_DATA" ]; then
-          log "No response from API, retrying in $${RETRY_DELAY}s..."
-          sleep $RETRY_DELAY
-          continue
-        fi
-
-        # Extract LB IP using jq
-        LB_IPV4=$(echo "$LB_DATA" | jq -r ".load_balancers[] | select(.name == \"$CLUSTER_NAME-api-lb\") | .public_net.ipv4.ip" 2>/dev/null || true)
-
-        if [ -n "$LB_IPV4" ] && [ "$LB_IPV4" != "null" ] && [ "$LB_IPV4" != "" ]; then
-          log "Found Load Balancer IP: $LB_IPV4"
-          break
-        fi
-
-        log "LB not found yet, retrying in $${RETRY_DELAY}s..."
-        sleep $RETRY_DELAY
-      done
-
-      # Always wipe the token immediately, regardless of success
-      log "Wiping Hetzner token from disk..."
-      rm -f "$HCLOUD_TOKEN_FILE"
-      # Also wipe from any shell history/environment
-      unset HCLOUD_TOKEN
-      sync
-
-      if [ -z "$LB_IPV4" ] || [ "$LB_IPV4" = "null" ] || [ "$LB_IPV4" = "" ]; then
-        log "WARNING: Could not discover LB after $MAX_RETRIES attempts."
-        log "TLS-SAN will not include LB IP. kubectl must use CP node IPs directly."
-        log "Token has been wiped from disk."
-        exit 0
-      fi
-
-      # Check if LB IP is already in config
-      if grep -q "^  - $LB_IPV4$" /etc/rancher/rke2/config.yaml 2>/dev/null; then
-        log "LB IP $LB_IPV4 already in TLS-SAN. Token wiped."
-        exit 0
-      fi
-
-      log "Updating RKE2 TLS-SAN with LB IP: $LB_IPV4"
-
-      # Backup config
-      cp /etc/rancher/rke2/config.yaml /etc/rancher/rke2/config.yaml.bak.$(date +%s)
-
-      # Safely inject LB IP into TLS-SAN list
-      # First, find if tls-san already exists
-      if grep -q "^tls-san:" /etc/rancher/rke2/config.yaml; then
-        # tls-san exists, append LB IP after first tls-san block
-        # We use sed to append after the line containing the first CP IP in tls-san
-        sed -i "/^  - ${first_control_plane_ip}/a\  - $LB_IPV4" /etc/rancher/rke2/config.yaml
-      else
-        # No tls-san, append at end of config
-        echo "" >> /etc/rancher/rke2/config.yaml
-        echo "tls-san:" >> /etc/rancher/rke2/config.yaml
-        echo "  - ${first_control_plane_ip}" >> /etc/rancher/rke2/config.yaml
-        echo "  - ${lb_ip}" >> /etc/rancher/rke2/config.yaml
-        echo "  - $LB_IPV4" >> /etc/rancher/rke2/config.yaml
-      fi
-
-      log "New RKE2 config:"
-      grep -A 5 "^tls-san:" /etc/rancher/rke2/config.yaml | tee -a "$LOG_FILE"
-
-      # Ensure token is wiped before restart
-      rm -f "$HCLOUD_TOKEN_FILE" 2>/dev/null || true
-
-      log "Restarting RKE2 to regenerate TLS certificate..."
-      systemctl restart rke2-server
-
-      log "Waiting for RKE2 to restart..."
-      sleep 15
-      until [ -f /etc/rancher/rke2/rke2.yaml ]; do
-        sleep 5
-      done
-      until /var/lib/rancher/rke2/bin/kubectl get nodes &>/dev/null; do
-        sleep 5
-      done
-
-      log "SUCCESS: RKE2 restarted with new TLS certificate including LB IP $LB_IPV4"
-      log "Token has been wiped from disk."
-      log "Log file location: $LOG_FILE"
-    owner: root:root
-    permissions: '0700'
-
 %{ if cis_profile != "" ~}
-  # CIS hardening script
   - path: /usr/local/bin/apply-cis-hardening.sh
     content: |
       #!/bin/bash
@@ -386,18 +238,15 @@ write_files:
 
       echo "Applying CIS hardening..."
 
-      # Create etcd user if not exists
       if ! id -u etcd &>/dev/null; then
         useradd -r -c "etcd user" -s /sbin/nologin -M etcd -U
       fi
 
-      # Apply sysctl settings
       if [ -f /usr/share/rke2/rke2-cis-sysctl.conf ]; then
         cp -f /usr/share/rke2/rke2-cis-sysctl.conf /etc/sysctl.d/60-rke2-cis.conf
         systemctl restart systemd-sysctl
       fi
 
-      # Set proper permissions for RKE2 directories
       chmod 700 /etc/rancher/rke2
       chmod 700 /var/lib/rancher/rke2/server
 
@@ -406,43 +255,27 @@ write_files:
     permissions: '0755'
 %{ endif ~}
 
-# Main installation commands
 runcmd:
-  # Create directories
+  - systemctl enable qemu-guest-agent
+  - systemctl start qemu-guest-agent
   - mkdir -p /etc/rancher/rke2
   - mkdir -p /var/lib/rancher/rke2/server/manifests
   - mkdir -p /run/containerd
 
 %{ if cis_profile != "" ~}
-  # Apply CIS hardening before RKE2 install
   - /usr/local/bin/apply-cis-hardening.sh
 %{ endif ~}
 
-  # Install RKE2
   - curl -sfL https://get.rke2.io | INSTALL_RKE2_VERSION="${rke2_version}" sh -
-
-  # Enable and start RKE2
   - systemctl enable rke2-server.service
   - systemctl start rke2-server.service
-
-  # Wait for RKE2 to be ready and setup environment
   - /usr/local/bin/wait-for-rke2.sh
-
-  # Discover LB IP and update TLS certificate (background - runs independently)
-  - |
-    echo "Starting LB discovery in background (self-contained, token will be auto-wiped)..."
-    nohup /usr/local/bin/discover-lb-and-update-tls.sh > /var/log/rke2-tls-discovery.nohup 2>&1 &
-
-  # Label node with additional information
   - |
     export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
     kubectl label node ${node_name} node.kubernetes.io/instance-type=${server_type} --overwrite || true
     kubectl label node ${node_name} topology.kubernetes.io/region=${region} --overwrite || true
-
-  # Print completion message
   - echo "=============================================="
   - echo "RKE2 Control Plane setup complete on ${node_name}"
-  - echo "LB discovery running in background (see /var/log/rke2-tls-discovery.log)"
   - echo "=============================================="
 
 final_message: |

@@ -25,7 +25,7 @@ Benefit: Encrypted SSH keys work, no connection management
 ```yaml
 packages:
   - curl          # API calls, RKE2 installation
-  - jq            # JSON parsing (Hetzner API response)
+  - jq            # JSON parsing
   - qemu-guest-agent  # Hetzner integration
   - iptables-persistent  # Firewall persistence
 ```
@@ -42,7 +42,6 @@ Cloud-init writes configuration files to disk:
 | `/var/lib/rancher/rke2/server/manifests/hcloud-secret.yaml` | HCCM auth | Hetzner API token + network ID |
 | `/var/lib/rancher/rke2/server/manifests/hcloud-cloud-controller-manager.yaml` | HCCM deploy | HelmChart manifest |
 | `/var/lib/rancher/rke2/server/manifests/hcloud-csi.yaml` | CSI deploy | HelmChart manifest |
-| `/etc/rancher/rke2/.hcloud-token` | **TEMP token** | For LB discovery |
 
 ### Phase 3: RKE2 Installation (2-3 minutes)
 
@@ -68,55 +67,13 @@ mkdir -p /root/.kube
 cp /etc/rancher/rke2/rke2.yaml /root/.kube/config
 ```
 
-### Phase 5: LB Discovery Script (Background)
+### Phase 5: Node Labeling
 
-This is where the magic happens! The script runs in the background via `nohup`.
+After RKE2 is ready, cloud-init labels the node:
 
 ```bash
-nohup /usr/local/bin/discover-lb-and-update-tls.sh > /var/log/rke2-tls-discovery.nohup 2>&1 &
-```
-
-#### Discovery Script Flow
-
-```
-1. Check if token file exists
-   └── If not: exit (already wiped or never provided)
-
-2. Read token from /etc/rancher/rke2/.hcloud-token
-
-3. Wait for RKE2 to be stable
-   ├── Check kubeconfig exists
-   └── Check kubectl get nodes works
-
-4. Poll Hetzner API (30 retries, 20 seconds)
-   └── curl -H "Authorization: Bearer $TOKEN" https://api.hetzner.cloud/v1/load_balancers
-
-5. Parse JSON response with jq
-   └── Extract: .load_balancers[] | select(.name == "cluster-name-api-lb") | .public_net.ipv4.ip
-
-6. If LB found:
-   ├── Check if IP already in TLS-SAN
-   │   └── If yes: skip update
-   ├── Backup config: cp config.yaml config.yaml.bak.<timestamp>
-   ├── Update TLS-SAN with LB IP
-   └── Restart RKE2: systemctl restart rke2-server
-
-7. If LB not found (timeout):
-   └── Log warning, continue with basic config
-
-8. ALWAYS wipe token file
-   └── rm -f /etc/rancher/rke2/.hcloud-token
-```
-
-#### Discovery Timing
-
-```
-Start: ~30 seconds after RKE2 is ready
-Retry interval: 20 seconds
-Max retries: 30 (10 minutes total)
-Expected discovery: 2-5 minutes (after LB is created)
-RKE2 restart: ~15-30 seconds
-Total additional time: ~3-6 minutes
+kubectl label node <node-name> node.kubernetes.io/instance-type=<type> --overwrite
+kubectl label node <node-name> topology.kubernetes.io/region=<region> --overwrite
 ```
 
 ## Cloud-Init Lifecycle on Worker Nodes
@@ -126,7 +83,7 @@ Workers have a simpler lifecycle:
 1. **Install packages** (same as CP)
 2. **Write RKE2 agent config**:
    ```yaml
-   server: https://first-cp-ip:9345
+   server: https://<server-url>:9345   # DNS name if configured, else first CP IP
    token: <cluster-token>
    ```
 3. **Install RKE2 agent**:
@@ -138,7 +95,22 @@ Workers have a simpler lifecycle:
    systemctl enable rke2-agent
    systemctl start rke2-agent
    ```
-5. **No LB discovery** (workers don't need it)
+
+## TLS-SAN and DNS Configuration
+
+The RKE2 TLS-SAN list includes:
+- Node's private IP
+- First control plane private IP
+- **Your DNS name** (if `cluster_api_dns` is set)
+
+```yaml
+tls-san:
+  - 10.0.1.10
+  - 10.0.1.11
+  - k8s.example.com   # <-- Your DNS name goes here
+```
+
+**Important**: The DNS name is baked into the certificate at installation time. If you add DNS later, you must update `cluster_api_dns` and recreate the nodes.
 
 ## Template Variables
 
@@ -154,10 +126,11 @@ Cloud-init is processed by Terraform's `templatefile()`. These variables are inj
 | `cluster_name` | `var.cluster_name` | Resource naming prefix |
 | `is_first_server` | `count.index == 0` | First CP gets `cluster-init: true` |
 | `first_control_plane_ip` | `cidrhost(var.cp_subnet, 10)` | IP for joining |
+| `cluster_api_dns` | `var.cluster_api_dns` | DNS name for TLS-SAN |
 | `private_ip` | Calculated from subnet | Node's private IP |
 | `cni` | `var.rke2_cni` | CNI plugin selection |
 | `enable_hccm` | `var.enable_hccm` | Enable HCCM installation |
-| `hcloud_token_cloudinit` | `local.hcloud_token_cloudinit` | **TEMP token for LB discovery** |
+| `hcloud_token` | `var.hcloud_token` | Hetzner API token for HCCM |
 
 ### Worker Template Variables
 
@@ -165,7 +138,8 @@ Cloud-init is processed by Terraform's `templatefile()`. These variables are inj
 |----------|--------|---------|
 | `rke2_version` | `var.rke2_version` | Install specific RKE2 version |
 | `rke2_token` | Same as CP | Cluster registration token |
-| `first_control_plane_ip` | `cidrhost(var.cp_subnet, 10)` | Server URL |
+| `server_url` | `var.cluster_api_dns` or first CP IP | Server URL for joining |
+| `first_control_plane_ip` | First CP IP | Fallback server URL |
 | `server_type` | `var.worker_server_type` | Node label |
 
 ## Monitoring Cloud-Init
@@ -183,29 +157,19 @@ cat /var/log/cloud-init-output.log
 # Check RKE2 status
 systemctl status rke2-server  # CP
 systemctl status rke2-agent   # Worker
-
-# Check LB discovery log
-cat /var/log/rke2-tls-discovery.log
-
-# Check nohup output
-cat /var/log/rke2-tls-discovery.nohup
 ```
 
 ### Common Log Messages
 
 ```
 # Success
-"Found Load Balancer IP: 91.99.113.133"
-"Updating RKE2 TLS-SAN with LB IP: 91.99.113.133"
-"SUCCESS: RKE2 restarted with new TLS certificate..."
+"RKE2 is ready!"
+"Setup complete. Kubernetes version: ..."
 "Token has been wiped from disk."
 
-# Timeout (normal if LB takes >10 min)
-"WARNING: Could not discover LB after 30 attempts."
-"Token has been wiped from disk."
-
-# Already done
-"LB IP 91.99.113.133 already in TLS-SAN. Token wiped."
+# RKE2 waiting
+"Waiting for kubeconfig..."
+"Waiting for API server..."
 ```
 
 ## Customizing Cloud-Init
@@ -276,25 +240,7 @@ ss -tlnp | grep 6443
 /usr/local/bin/rke2 server --debug
 ```
 
-### Token Not Wiped
-
-```bash
-# Check if file exists
-ls -la /etc/rancher/rke2/.hcloud-token
-
-# Check discovery log for errors
-tail -50 /var/log/rke2-tls-discovery.log
-
-# Manual wipe (emergency only)
-rm -f /etc/rancher/rke2/.hcloud-token
-```
-
 ## Security Considerations
-
-### Token Files
-
-- `/etc/rancher/rke2/.hcloud-token`: **Should be deleted** after LB discovery
-- Verify deletion: `ls -la /etc/rancher/rke2/.hcloud-token` (should not exist)
 
 ### HCCM Secret
 

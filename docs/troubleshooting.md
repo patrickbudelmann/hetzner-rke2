@@ -26,20 +26,18 @@ tls: failed to verify certificate: x509: certificate signed by unknown authority
 ```
 
 **Causes:**
-- Kubeconfig points to Load Balancer IP but cert doesn't include it yet
-- Cloud-init LB discovery script hasn't completed
-- Manual cert update needed
+- Kubeconfig points to DNS name or LB IP but the cluster was deployed without `cluster_api_dns`
+- The server address in kubeconfig doesn't match any name in the RKE2 TLS-SAN
 
 **Solutions:**
 
-**Option A: Wait (Recommended)**
+**Option A: Verify DNS is in TLS-SAN**
 ```bash
-# Wait 2-3 more minutes for cloud-init to complete
-cat /var/log/rke2-tls-discovery.log
-# Look for: "SUCCESS: RKE2 restarted with new TLS certificate"
+# Check what names are in the cert
+openssl s_client -connect <SERVER>:6443 -servername <DNS_NAME> </dev/null 2>/dev/null | openssl x509 -noout -text | grep DNS
 ```
 
-**Option B: Use CP Node IP**
+**Option B: Use CP Node IP (Bypasses DNS/LB)**
 ```bash
 # Get first CP IP
 CP_IP=$(terraform output -json control_plane_nodes | jq -r '.[0].public_ipv4')
@@ -50,22 +48,15 @@ export KUBECONFIG=$(pwd)/kubeconfig.yaml
 kubectl get nodes
 ```
 
-**Option C: Manual Fix**
+**Option C: Fix with DNS**
 ```bash
-# SSH to first CP
-ssh root@<CP_IP>
-
-# Edit config
-nano /etc/rancher/rke2/config.yaml
-
-# Add LB IP to tls-san:
-tls-san:
-  - 10.0.1.10
-  - 10.0.3.10
-  - <LB_PUBLIC_IP>
-
-# Restart RKE2
-systemctl restart rke2-server
+# If you forgot to set cluster_api_dns, set it and recreate the cluster:
+# 1. Add to terraform.tfvars:
+#    cluster_api_dns = "k8s.example.com"
+# 2. terraform apply
+# 3. Create DNS A record: k8s.example.com -> <LB_IP>
+# 4. Update kubeconfig:
+#    sed -i '' "s/127.0.0.1/k8s.example.com/g" kubeconfig.yaml
 ```
 
 ### 2. Nodes Not Joining Cluster
@@ -256,31 +247,7 @@ cloud-init init
 cloud-init modules
 ```
 
-### 7. Token Not Wiped
-
-**Error:**
-```
-/etc/rancher/rke2/.hcloud-token still exists after deployment
-```
-
-**Solutions:**
-
-**Manual wipe:**
-```bash
-ssh root@<CP_IP> "rm -f /etc/rancher/rke2/.hcloud-token && sync"
-```
-
-**Check discovery script:**
-```bash
-ssh root@<CP_IP> "cat /var/log/rke2-tls-discovery.log"
-```
-
-**Common causes:**
-- Script crashed before reaching wipe step
-- Script didn't have permission to delete file
-- Disk issue prevented deletion
-
-### 8. Load Balancer Health Check Failing
+### 7. Load Balancer Health Check Failing
 
 **Error:**
 ```
@@ -315,7 +282,7 @@ hcloud load-balancer describe <LB_NAME>
 # Detach and re-attach targets
 ```
 
-### 9. kubectl Connection Refused
+### 8. kubectl Connection Refused
 
 **Error:**
 ```
@@ -338,7 +305,7 @@ ssh root@<CP_IP> "curl -k https://localhost:6443/healthz"
 **Verify kubeconfig:**
 ```bash
 cat kubeconfig.yaml | grep server
-# Should point to correct IP
+# Should point to correct IP or DNS name
 ```
 
 **Check if API port is open:**
@@ -346,7 +313,7 @@ cat kubeconfig.yaml | grep server
 ssh root@<CP_IP> "ss -tlnp | grep 6443"
 ```
 
-### 10. Terraform Apply Fails
+### 9. Terraform Apply Fails
 
 **Error:**
 ```
@@ -390,7 +357,6 @@ kubectl get events -n kube-system > system-events.txt
 
 # On CP node
 journalctl -u rke2-server > rke2-logs.txt
-cat /var/log/rke2-tls-discovery.log > tls-discovery.txt
 cat /etc/rancher/rke2/config.yaml > rke2-config.txt
 ```
 

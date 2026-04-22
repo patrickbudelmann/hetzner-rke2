@@ -96,13 +96,13 @@ output "load_balancer_private_ip" {
 }
 
 output "kubernetes_api_endpoint" {
-  description = "Kubernetes API endpoint via load balancer"
-  value       = "https://${hcloud_load_balancer.rke2_api.ipv4}:6443"
+  description = "Kubernetes API endpoint"
+  value       = var.cluster_api_dns != "" ? "https://${var.cluster_api_dns}:6443" : "https://${hcloud_load_balancer.rke2_api.ipv4}:6443"
 }
 
 output "rke2_supervisor_endpoint" {
   description = "RKE2 supervisor endpoint for node registration"
-  value       = "https://${hcloud_load_balancer.rke2_api.ipv4}:9345"
+  value       = var.cluster_api_dns != "" ? "https://${var.cluster_api_dns}:9345" : "https://${hcloud_load_balancer.rke2_api.ipv4}:9345"
 }
 
 # =============================================================================
@@ -205,37 +205,9 @@ output "kubeconfig_use_cp_command" {
   value       = "sed -i '' 's/127.0.0.1/${hcloud_server.control_plane[0].ipv4_address}/g' kubeconfig.yaml"
 }
 
-output "kubeconfig_use_lb_command" {
-  description = "Command to update kubeconfig to use load balancer (requires TLS fix)"
-  value       = "sed -i '' 's/127.0.0.1/${hcloud_load_balancer.rke2_api.ipv4}/g' kubeconfig.yaml"
-}
-
-output "tls_fix_instructions" {
-  description = "Instructions to add LB IP to RKE2 TLS certificate (automated, but shown for reference)"
-  value       = <<-EOT
-# ⚠️  NOTE: This fix is now AUTOMATED during deployment!
-# The LB IP ${hcloud_load_balancer.rke2_api.ipv4} is automatically added to the RKE2 TLS certificate.
-
-# Manual steps (if you need to do this manually):
-
-# 1. SSH to the first control plane node:
-ssh -i ${var.ssh_private_key_path} root@${hcloud_server.control_plane[0].ipv4_address}
-
-# 2. Edit the RKE2 config:
-sudo nano /etc/rancher/rke2/config.yaml
-
-# 3. Add the LB public IP to tls-san section:
-tls-san:
-  - ${hcloud_load_balancer.rke2_api.ipv4}
-  - ${local.first_control_plane_ip}
-  - ${cidrhost(var.load_balancer_subnet, 10)}
-
-# 4. Restart RKE2 to regenerate certificates:
-sudo systemctl restart rke2-server
-
-# 5. Update kubeconfig on your local machine:
-sed -i '' 's/127.0.0.1/${hcloud_load_balancer.rke2_api.ipv4}/g' kubeconfig.yaml
-EOT
+output "kubeconfig_use_dns_command" {
+  description = "Command to update kubeconfig to use the cluster DNS name"
+  value       = var.cluster_api_dns != "" ? "sed -i '' 's/127.0.0.1/${var.cluster_api_dns}/g' kubeconfig.yaml" : "No DNS configured. Set cluster_api_dns variable."
 }
 
 # =============================================================================
@@ -281,9 +253,12 @@ Network Configuration:
   LB Subnet:     ${var.load_balancer_subnet}
 
 API Endpoints:
-  Kubernetes API: https://${hcloud_load_balancer.rke2_api.ipv4}:6443
-  RKE2 Supervisor: https://${hcloud_load_balancer.rke2_api.ipv4}:9345
-  Load Balancer IP: ${hcloud_load_balancer.rke2_api.ipv4}
+  Kubernetes API:    ${var.cluster_api_dns != "" ? "https://${var.cluster_api_dns}:6443" : "https://${hcloud_load_balancer.rke2_api.ipv4}:6443"}
+  Load Balancer IP:  ${hcloud_load_balancer.rke2_api.ipv4}
+
+${var.cluster_api_dns != "" ? "DNS Configuration:" : "DNS Configuration:\n  No DNS configured - set cluster_api_dns for a stable endpoint"}
+${var.cluster_api_dns != "" ? "  Cluster API DNS: ${var.cluster_api_dns}" : ""}
+${var.cluster_api_dns != "" ? "  Create an A/AAAA record: ${var.cluster_api_dns} → ${hcloud_load_balancer.rke2_api.ipv4}" : ""}
 
 Features Enabled:
   HCCM:          ${var.enable_hccm ? "Yes (${var.hccm_version})" : "No"}
@@ -291,12 +266,12 @@ Features Enabled:
   Auto Updates:  ${var.enable_auto_updates ? "Yes" : "No"}
   CIS Hardening: ${var.rke2_cis_profile != "" ? var.rke2_cis_profile : "No"}
 
-Quick Start (Use Load Balancer - RECOMMENDED):
+Quick Start:
   1. Get Kubeconfig:
      scp -i ${var.ssh_private_key_path} root@${hcloud_server.control_plane[0].ipv4_address}:/etc/rancher/rke2/rke2.yaml ./kubeconfig.yaml
   
-  2. Update to use Load Balancer IP (TLS auto-fixed):
-     sed -i '' 's/127.0.0.1/${hcloud_load_balancer.rke2_api.ipv4}/g' kubeconfig.yaml
+  2. Update kubeconfig server address:
+     sed -i '' 's/127.0.0.1/${var.cluster_api_dns != "" ? var.cluster_api_dns : hcloud_load_balancer.rke2_api.ipv4}/g' kubeconfig.yaml
   
   3. Set KUBECONFIG:
      export KUBECONFIG=$(pwd)/kubeconfig.yaml
@@ -304,13 +279,10 @@ Quick Start (Use Load Balancer - RECOMMENDED):
   4. Verify:
      kubectl get nodes
 
-Alternative (Use Control Plane IP directly):
-  sed -i '' 's/127.0.0.1/${hcloud_server.control_plane[0].ipv4_address}/g' kubeconfig.yaml
-
 ⚠️  IMPORTANT NOTES:
-   - Wait 3-5 minutes for RKE2 installation AND TLS certificate update
-   - The LB IP is automatically added to the TLS certificate
-   - If you get TLS errors, wait 1-2 more minutes and try again
+   - Wait 3-5 minutes for RKE2 installation to complete
+   - If using DNS: create the DNS record pointing to the LB IP after deployment
+   - The DNS name is baked into the RKE2 TLS certificate during installation
 
 EOT
 }
@@ -335,36 +307,10 @@ output "check_csi_command" {
 }
 
 # =============================================================================
-# Security - Token Revocation Reminder
+# DNS Configuration Helper
 # =============================================================================
 
-output "token_revocation_reminder" {
-  description = "CRITICAL: Reminder to revoke the temporary cloud-init token"
-  value       = <<-EOT
-
-╔════════════════════════════════════════════════════════════════════════════╗
-║                         SECURITY REMINDER                                   ║
-╚════════════════════════════════════════════════════════════════════════════╝
-
-🔐 TOKEN REVOCATION REQUIRED:
-
-You used a dedicated Hetzner API token for cloud-init LB discovery.
-This token was temporarily exposed to your control plane nodes.
-
-ACTION REQUIRED:
-  1. Log in to Hetzner Cloud Console: https://console.hetzner.cloud/
-  2. Navigate to your project → Security → API Tokens
-  3. Find and REVOKE the token used for this deployment
-
-⚠️  Why this matters:
-   - The token was written to disk on CP nodes during first boot
-   - It was wiped after use, but may still exist in logs/backups
-   - Revoking ensures zero residual risk
-
-Verification:
-  Check /var/log/rke2-tls-discovery.log on CP nodes to confirm:
-  - "Wiping Hetzner token from disk..." appears in the log
-  - File /etc/rancher/rke2/.hcloud-token should not exist
-
-EOT
+output "dns_setup_required" {
+  description = "Instructions for setting up DNS when cluster_api_dns is configured"
+  value       = var.cluster_api_dns != "" ? "Create an A/AAAA record: ${var.cluster_api_dns} -> ${hcloud_load_balancer.rke2_api.ipv4}" : "No DNS configured. Set cluster_api_dns for a stable endpoint."
 }
