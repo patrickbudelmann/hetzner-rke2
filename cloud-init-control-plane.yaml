@@ -296,7 +296,7 @@ write_files:
           "https://api.hetzner.cloud/v1/load_balancers" 2>/dev/null || true)
 
         if [ -z "$LB_DATA" ]; then
-          log "No response from API, retrying in ${RETRY_DELAY}s..."
+          log "No response from API, retrying in $${RETRY_DELAY}s..."
           sleep $RETRY_DELAY
           continue
         fi
@@ -309,7 +309,7 @@ write_files:
           break
         fi
 
-        log "LB not found yet, retrying in ${RETRY_DELAY}s..."
+        log "LB not found yet, retrying in $${RETRY_DELAY}s..."
         sleep $RETRY_DELAY
       done
 
