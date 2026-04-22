@@ -26,6 +26,20 @@ cluster_name = "production"
 environment  = "prod"
 
 # =============================================================================
+# DNS Configuration (Strongly Recommended)
+# =============================================================================
+# DNS name for the Kubernetes API endpoint.
+# This name is baked into the RKE2 TLS certificate during installation.
+# After deployment, create an A record pointing to the Load Balancer IP.
+#
+# Example:
+#   cluster_api_dns = "k8s.example.com"
+#
+# Then create DNS A record: k8s.example.com -> <LB_PUBLIC_IP>
+# =============================================================================
+# cluster_api_dns = "k8s.example.com"
+
+# =============================================================================
 # Control Plane Configuration
 # Adjust based on your requirements
 # =============================================================================
