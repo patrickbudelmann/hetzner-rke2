@@ -355,7 +355,6 @@ ACTION REQUIRED:
   1. Log in to Hetzner Cloud Console: https://console.hetzner.cloud/
   2. Navigate to your project → Security → API Tokens
   3. Find and REVOKE the token used for this deployment
-  4. Token name: ${var.hcloud_token_cloudinit != "" ? "(the token you provided as hcloud_token_cloudinit)" : "(same as hcloud_token - REVOKE IMMEDIATELY)"}
 
 ⚠️  Why this matters:
    - The token was written to disk on CP nodes during first boot
