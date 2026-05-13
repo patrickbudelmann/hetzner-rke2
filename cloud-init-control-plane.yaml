@@ -23,8 +23,8 @@ write_files:
         - cluster=${cluster_name}
         - node-type=control-plane
 %{ if enable_hccm ~}
-        - hertzner.cloud/location=${region}
-        - hertzner.cloud/server-type=${server_type}
+        - hetzner.cloud/location=${region}
+        - hetzner.cloud/server-type=${server_type}
 %{ endif ~}
 %{ for key, value in labels ~}
         - ${key}=${value}
@@ -46,10 +46,11 @@ write_files:
       kubelet-arg:
         - "cloud-provider=external"
         - "eviction-hard=memory.available<500Mi,nodefs.available<10%"
+        - "anonymous-auth=false"
       kube-controller-manager-arg:
-        - "bind-address=0.0.0.0"
+        - "bind-address=127.0.0.1"
       kube-scheduler-arg:
-        - "bind-address=0.0.0.0"
+        - "bind-address=127.0.0.1"
       kube-proxy-arg:
         - "metrics-bind-address=0.0.0.0"
       disable-cloud-controller: true
@@ -59,6 +60,14 @@ write_files:
 %{ if !disable_etcd_snapshots ~}
       etcd-snapshot-schedule-cron: "0 */${etcd_snapshot_interval} * * *"
       etcd-snapshot-retention: ${etcd_snapshot_retention}
+%{ endif ~}
+%{ if enable_etcd_s3_backup ~}
+      etcd-s3: true
+      etcd-s3-endpoint: ${s3_endpoint_url}
+      etcd-s3-region: ${s3_region}
+      etcd-s3-bucket: ${etcd_s3_bucket}
+      etcd-s3-access-key: ${s3_access_key_id}
+      etcd-s3-secret-key: ${s3_secret_access_key}
 %{ endif ~}
     owner: root:root
     permissions: '0600'
@@ -78,17 +87,13 @@ write_files:
 %{ endif ~}
 
 %{ if enable_hccm ~}
-  - path: /var/lib/rancher/rke2/server/manifests/hcloud-secret.yaml
-    content: |
-      apiVersion: v1
-      kind: Secret
-      metadata:
-        name: hcloud
-        namespace: kube-system
-      type: Opaque
-      stringData:
-        token: "${hcloud_token}"
-        network: "${network_id}"
+  - path: /etc/rancher/rke2/hcloud-token
+    content: "${hcloud_token}"
+    owner: root:root
+    permissions: '0600'
+
+  - path: /etc/rancher/rke2/hcloud-network
+    content: "${network_id}"
     owner: root:root
     permissions: '0600'
 
@@ -158,33 +163,77 @@ write_files:
     owner: root:root
     permissions: '0600'
 
-  - path: /var/lib/rancher/rke2/server/manifests/hcloud-csi-secret.yaml
+  - path: /etc/rancher/rke2/csi-encryption-passphrase
+    content: "${csi_encryption_passphrase}"
+    owner: root:root
+    permissions: '0600'
+%{ endif ~}
+
+%{ if enable_cert_manager ~}
+  - path: /var/lib/rancher/rke2/server/manifests/cert-manager.yaml
     content: |
-      apiVersion: v1
-      kind: Secret
+      apiVersion: helm.cattle.io/v1
+      kind: HelmChart
       metadata:
-        name: hcloud-csi-encryption
+        name: cert-manager
         namespace: kube-system
-      type: Opaque
-      stringData:
-        encryption-passphrase: "${csi_encryption_passphrase}"
+      spec:
+        repo: https://charts.jetstack.io
+        chart: cert-manager
+        targetNamespace: cert-manager
+        createNamespace: true
+        version: "${cert_manager_version}"
+        valuesContent: |-
+          installCRDs: true
+          tolerations:
+            - key: "node-role.kubernetes.io/control-plane"
+              effect: "NoSchedule"
+              operator: "Exists"
+          nodeSelector:
+            node-role.kubernetes.io/control-plane: "true"
+    owner: root:root
+    permissions: '0600'
+%{ endif ~}
+
+%{ if enable_ingress ~}
+  - path: /var/lib/rancher/rke2/server/manifests/ingress-nginx.yaml
+    content: |
+      apiVersion: helm.cattle.io/v1
+      kind: HelmChart
+      metadata:
+        name: ingress-nginx
+        namespace: kube-system
+      spec:
+        repo: https://kubernetes.github.io/ingress-nginx
+        chart: ingress-nginx
+        targetNamespace: ingress-nginx
+        createNamespace: true
+        version: "4.12.0"
+        valuesContent: |-
+          controller:
+            service:
+              type: LoadBalancer
+            publishService:
+              enabled: true
+            tolerations:
+              - key: "node-role.kubernetes.io/control-plane"
+                effect: "NoSchedule"
+                operator: "Exists"
+            nodeSelector:
+              node-role.kubernetes.io/control-plane: "true"
     owner: root:root
     permissions: '0600'
 %{ endif ~}
 
 %{ if enable_s3_csi ~}
-  # Scality S3 CSI credentials secret
-  - path: /var/lib/rancher/rke2/server/manifests/s3-csi-secret.yaml
-    content: |
-      apiVersion: v1
-      kind: Secret
-      metadata:
-        name: s3-secret
-        namespace: kube-system
-      type: Opaque
-      stringData:
-        access_key_id: "${s3_access_key_id}"
-        secret_access_key: "${s3_secret_access_key}"
+  # Scality S3 CSI credentials (written to files, injected via kubectl after RKE2 is up)
+  - path: /etc/rancher/rke2/s3-access-key-id
+    content: "${s3_access_key_id}"
+    owner: root:root
+    permissions: '0600'
+
+  - path: /etc/rancher/rke2/s3-secret-access-key
+    content: "${s3_secret_access_key}"
     owner: root:root
     permissions: '0600'
 
@@ -258,7 +307,7 @@ write_files:
           storageclass.kubernetes.io/is-default-class: "false"
       provisioner: s3.csi.scality.com
       reclaimPolicy: Delete
-      volumeBindingMode: Immediate
+      volumeBindingMode: WaitForFirstConsumer
       parameters:
         csi.storage.k8s.io/provisioner-secret-name: s3-secret
         csi.storage.k8s.io/provisioner-secret-namespace: kube-system
@@ -268,6 +317,110 @@ write_files:
         - allow-delete
         - allow-other
         - region=${s3_region}
+    owner: root:root
+    permissions: '0600'
+%{ endif ~}
+
+%{ if enable_cluster_autoscaler ~}
+  - path: /var/lib/rancher/rke2/server/manifests/cluster-autoscaler.yaml
+    content: |
+      apiVersion: helm.cattle.io/v1
+      kind: HelmChart
+      metadata:
+        name: cluster-autoscaler
+        namespace: kube-system
+      spec:
+        repo: https://kubernetes-sigs.github.io/cluster-autoscaler
+        chart: cluster-autoscaler
+        targetNamespace: kube-system
+        version: "9.43.0"
+        valuesContent: |-
+          cloudProvider: hetzner
+          autoscalingGroups:
+            - name: ${autoscaler_node_pool_name}
+              maxSize: ${autoscaler_max_nodes}
+              minSize: ${autoscaler_min_nodes}
+              instanceType: ${autoscaler_node_type}
+              region: ${region}
+          extraEnv:
+            HCLOUD_TOKEN: "${hcloud_token}"
+            HCLOUD_NETWORK: "${network_id}"
+            HCLOUD_CLUSTER_CONFIG: "${autoscaler_cluster_config}"
+          extraArgs:
+            nodes: "${autoscaler_node_group}"
+            scale-down-unneeded-time: "10m"
+            scale-down-utilization-threshold: "0.5"
+            logtostderr: true
+            stderrthreshold: info
+            v: "4"
+          tolerations:
+            - key: "node-role.kubernetes.io/control-plane"
+              effect: "NoSchedule"
+              operator: "Exists"
+          nodeSelector:
+            node-role.kubernetes.io/control-plane: "true"
+          resources:
+            limits:
+              cpu: 100m
+              memory: 300Mi
+            requests:
+              cpu: 100m
+              memory: 300Mi
+    owner: root:root
+    permissions: '0600'
+%{ endif ~}
+
+%{ if enable_monitoring ~}
+  - path: /var/lib/rancher/rke2/server/manifests/kube-prometheus-stack.yaml
+    content: |
+      apiVersion: helm.cattle.io/v1
+      kind: HelmChart
+      metadata:
+        name: kube-prometheus-stack
+        namespace: kube-system
+      spec:
+        repo: https://prometheus-community.github.io/helm-charts
+        chart: kube-prometheus-stack
+        targetNamespace: monitoring
+        createNamespace: true
+        version: "${monitoring_version}"
+        valuesContent: |-
+          prometheus:
+            prometheusSpec:
+              resources:
+                requests:
+                  cpu: 200m
+                  memory: 512Mi
+                limits:
+                  memory: 2Gi
+              tolerations:
+                - key: "node-role.kubernetes.io/control-plane"
+                  effect: "NoSchedule"
+                  operator: "Exists"
+              nodeSelector:
+                node-role.kubernetes.io/control-plane: "true"
+          grafana:
+            service:
+              type: ClusterIP
+            ingress:
+              enabled: false
+            tolerations:
+              - key: "node-role.kubernetes.io/control-plane"
+                effect: "NoSchedule"
+                operator: "Exists"
+            nodeSelector:
+              node-role.kubernetes.io/control-plane: "true"
+          alertmanager:
+            enabled: true
+            alertmanagerSpec:
+              tolerations:
+                - key: "node-role.kubernetes.io/control-plane"
+                  effect: "NoSchedule"
+                  operator: "Exists"
+              nodeSelector:
+                node-role.kubernetes.io/control-plane: "true"
+          defaultRules:
+            create: true
     owner: root:root
     permissions: '0600'
 %{ endif ~}
@@ -291,11 +444,43 @@ write_files:
     content: |
       APT::Periodic::Update-Package-Lists "1";
       APT::Periodic::Download-Upgradeable-Packages "1";
-      APT::Periodic::AutocleanInterval "7";
-      APT::Periodic::Unattended-Upgrade "1";
+       APT::Periodic::AutocleanInterval "7";
+       APT::Periodic::Unattended-Upgrade "1";
     owner: root:root
     permissions: '0644'
 %{ endif ~}
+
+  # PodDisruptionBudget for CoreDNS
+  - path: /var/lib/rancher/rke2/server/manifests/coredns-pdb.yaml
+    content: |
+      apiVersion: policy/v1
+      kind: PodDisruptionBudget
+      metadata:
+        name: coredns-pdb
+        namespace: kube-system
+      spec:
+        minAvailable: 1
+        selector:
+          matchLabels:
+            k8s-app: kube-dns
+    owner: root:root
+    permissions: '0644'
+
+  # PodDisruptionBudget for metrics-server
+  - path: /var/lib/rancher/rke2/server/manifests/metrics-server-pdb.yaml
+    content: |
+      apiVersion: policy/v1
+      kind: PodDisruptionBudget
+      metadata:
+        name: metrics-server-pdb
+        namespace: kube-system
+      spec:
+        minAvailable: 1
+        selector:
+          matchLabels:
+            k8s-app: metrics-server
+    owner: root:root
+    permissions: '0644'
 
   - path: /usr/local/bin/wait-for-rke2.sh
     content: |
@@ -370,6 +555,29 @@ runcmd:
   - systemctl enable rke2-server.service
   - systemctl start rke2-server.service
   - /usr/local/bin/wait-for-rke2.sh
+%{ if enable_hccm ~}
+  - |
+    export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
+    kubectl -n kube-system create secret generic hcloud \
+      --from-literal=token="$(cat /etc/rancher/rke2/hcloud-token)" \
+      --from-literal=network="$(cat /etc/rancher/rke2/hcloud-network)" \
+      --dry-run=client -o yaml | kubectl apply -f -
+%{ endif ~}
+%{ if enable_csi ~}
+  - |
+    export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
+    kubectl -n kube-system create secret generic hcloud-csi-encryption \
+      --from-literal=encryption-passphrase="$(cat /etc/rancher/rke2/csi-encryption-passphrase)" \
+      --dry-run=client -o yaml | kubectl apply -f -
+%{ endif ~}
+%{ if enable_s3_csi ~}
+  - |
+    export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
+    kubectl -n kube-system create secret generic s3-secret \
+      --from-literal=access_key_id="$(cat /etc/rancher/rke2/s3-access-key-id)" \
+      --from-literal=secret_access_key="$(cat /etc/rancher/rke2/s3-secret-access-key)" \
+      --dry-run=client -o yaml | kubectl apply -f -
+%{ endif ~}
   - |
     export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
     kubectl label node ${node_name} node.kubernetes.io/instance-type=${server_type} --overwrite || true

@@ -67,6 +67,20 @@ resource "hcloud_server" "control_plane" {
     s3_region                 = local.s3_region
     s3_access_key_id          = var.s3_access_key_id
     s3_secret_access_key      = var.s3_secret_access_key
+    enable_cluster_autoscaler = var.enable_cluster_autoscaler
+    autoscaler_min_nodes      = var.autoscaler_min_nodes
+    autoscaler_max_nodes      = var.autoscaler_max_nodes
+    autoscaler_node_type      = var.autoscaler_node_type
+    autoscaler_node_pool_name = var.autoscaler_node_pool_name
+    autoscaler_node_group     = local.autoscaler_node_group
+    autoscaler_cluster_config = local.autoscaler_cluster_config
+    enable_monitoring        = var.enable_monitoring
+    monitoring_version       = var.monitoring_version
+    enable_ingress           = var.enable_ingress
+    enable_cert_manager      = var.enable_cert_manager
+    cert_manager_version    = var.cert_manager_version
+    enable_etcd_s3_backup   = var.enable_etcd_s3_backup
+    etcd_s3_bucket          = var.etcd_s3_bucket
   })
 
   lifecycle {
@@ -101,6 +115,38 @@ resource "hcloud_volume" "control_plane" {
 }
 
 # =============================================================================
+# Node Drain on Destroy (Control Plane)
+# =============================================================================
+resource "null_resource" "drain_control_plane" {
+  count = var.control_plane_count
+
+  triggers = {
+    server_id = hcloud_server.control_plane[count.index].id
+  }
+
+  provisioner "remote-exec" {
+    when = destroy
+
+    inline = [
+      "export KUBECONFIG=/etc/rancher/rke2/rke2.yaml",
+      "kubectl drain ${var.cluster_name}-cp-${count.index + 1} --ignore-daemonsets --delete-emptydir-data --force --timeout=120s || true"
+    ]
+  }
+
+  connection {
+    type        = "ssh"
+    host        = hcloud_server.control_plane[count.index].ipv4_address
+    user        = "root"
+    private_key = file(var.ssh_private_key_path)
+    timeout     = "2m"
+  }
+
+  depends_on = [
+    hcloud_server.control_plane,
+  ]
+}
+
+# =============================================================================
 # Worker Nodes
 # =============================================================================
 resource "hcloud_server" "workers" {
@@ -112,6 +158,11 @@ resource "hcloud_server" "workers" {
   location    = var.region
 
   ssh_keys = [hcloud_ssh_key.rke2.id]
+
+  public_net {
+    ipv4_enabled = false
+    ipv6_enabled = false
+  }
 
   network {
     network_id = hcloud_network.rke2.id
@@ -171,4 +222,38 @@ resource "hcloud_volume" "workers" {
   lifecycle {
     prevent_destroy = true
   }
+}
+
+# =============================================================================
+# Node Drain on Destroy (Workers)
+# =============================================================================
+resource "null_resource" "drain_workers" {
+  count = var.worker_count
+
+  triggers = {
+    server_id = hcloud_server.workers[count.index].id
+  }
+
+  provisioner "remote-exec" {
+    when = destroy
+
+    inline = [
+      "export KUBECONFIG=/etc/rancher/rke2/rke2.yaml",
+      "kubectl drain ${var.cluster_name}-worker-${count.index + 1} --ignore-daemonsets --delete-emptydir-data --force --timeout=120s || true"
+    ]
+  }
+
+  # Run drain command on first control plane node (has kubectl access)
+  connection {
+    type        = "ssh"
+    host        = hcloud_server.control_plane[0].ipv4_address
+    user        = "root"
+    private_key = file(var.ssh_private_key_path)
+    timeout     = "2m"
+  }
+
+  depends_on = [
+    hcloud_server.workers,
+    hcloud_server.control_plane,
+  ]
 }

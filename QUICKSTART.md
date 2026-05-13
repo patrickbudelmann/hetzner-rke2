@@ -87,9 +87,78 @@ kubectl get pods -n kube-system -l app=hcloud-csi
 
 # Check Storage Classes
 kubectl get storageclass
+
+# Check NGINX Ingress Controller (if enabled)
+kubectl get pods -n ingress-nginx -l app.kubernetes.io/name=ingress-nginx
+
+# Check cert-manager (if enabled)
+kubectl get pods -n cert-manager -l app.kubernetes.io/name=cert-manager
 ```
 
-### Step 5: Test Storage (Optional)
+### Step 5: SSH to Workers (Jump Host Pattern)
+
+Worker nodes have no public IPs for security. Use a control plane node as a jump host:
+
+```bash
+# Get IPs
+CP_IP=$(terraform output -raw first_control_plane_ip)
+WORKER1_PRIVATE_IP="10.0.2.10"  # Check with: kubectl get nodes -o wide
+
+# SSH via jump host
+ssh -J root@$CP_IP root@$WORKER1_PRIVATE_IP
+
+# Or add to ~/.ssh/config for convenience:
+cat >> ~/.ssh/config <<EOF
+Host rke2-cp-*
+  User root
+  IdentityFile ~/.ssh/id_ed25519
+  ProxyJump $CP_IP
+EOF
+```
+
+### Step 6: Test Ingress (Optional)
+
+Create a test ingress to verify the NGINX Ingress Controller:
+
+```bash
+# Create a test deployment
+kubectl create deployment nginx --image=nginx --port=80
+
+# Expose it
+kubectl expose deployment nginx --port=80
+
+# Create an ingress resource
+cat <<EOF | kubectl apply -f -
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: test-ingress
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: test.example.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: nginx
+            port:
+              number: 80
+EOF
+
+# Get the ingress load balancer IP
+kubectl get ingress test-ingress
+
+# Add to /etc/hosts for testing:
+# <INGRESS_LB_IP> test.example.com
+# curl http://test.example.com
+```
+
+### Step 7: Test Storage (Optional)
 
 ```bash
 # Create a test PVC
@@ -243,17 +312,35 @@ kubectl get secret hcloud -n kube-system
 
 ## 📚 Next Steps
 
-1. **Install Ingress Controller**:
+1. **Deploy your applications!**
+
+2. **Configure DNS for Ingress**:
+   - Get the ingress load balancer IP: `kubectl get svc -n ingress-nginx`
+   - Create DNS A records pointing to this IP for your domains
+
+3. **Set up cert-manager ClusterIssuer** for automatic TLS:
    ```bash
-   kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.10.0/deploy/static/provider/cloud/deploy.yaml
+   kubectl apply -f - <<EOF
+   apiVersion: cert-manager.io/v1
+   kind: ClusterIssuer
+   metadata:
+     name: letsencrypt-prod
+   spec:
+     acme:
+       server: https://acme-v02.api.letsencrypt.org/directory
+       email: your@email.com
+       privateKeySecretRef:
+         name: letsencrypt-prod
+       solvers:
+       - http01:
+           ingress:
+             ingressClassName: nginx
+   EOF
    ```
 
-2. **Install cert-manager**:
-   ```bash
-   kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.14.0/cert-manager.yaml
-   ```
-
-3. **Deploy your applications!**
+4. **Enable Cluster Autoscaler** (optional):
+   - Set `enable_cluster_autoscaler = true` in terraform.tfvars
+   - Autoscaler will manage a separate node pool outside Terraform
 
 ---
 

@@ -37,6 +37,11 @@ output "csi_driver_enabled" {
   value       = var.enable_csi_driver
 }
 
+output "cert_manager_enabled" {
+  description = "Whether cert-manager is enabled"
+  value       = var.enable_cert_manager
+}
+
 # =============================================================================
 # Network Information
 # =============================================================================
@@ -158,7 +163,6 @@ output "worker_nodes" {
     for i, server in hcloud_server.workers : {
       index       = i + 1
       name        = server.name
-      public_ipv4 = server.ipv4_address
       private_ip  = tolist(server.network)[0].ip
       server_type = server.server_type
       id          = server.id
@@ -167,8 +171,10 @@ output "worker_nodes" {
 }
 
 output "worker_ips" {
-  description = "List of worker node public IPs"
-  value       = hcloud_server.workers[*].ipv4_address
+  description = "List of worker node private IPs (workers have no public IPs)"
+  value = [
+    for server in hcloud_server.workers : tolist(server.network)[0].ip
+  ]
 }
 
 # =============================================================================
@@ -184,10 +190,18 @@ output "ssh_control_plane_commands" {
 }
 
 output "ssh_worker_commands" {
-  description = "SSH commands to connect to worker nodes"
+  description = "SSH commands to connect to worker nodes via control plane jump host"
   value = [
-    for ip in hcloud_server.workers[*].ipv4_address :
-    "ssh -i ${var.ssh_private_key_path} root@${ip}"
+    for i, server in hcloud_server.workers :
+    "ssh -i ${var.ssh_private_key_path} -J root@${hcloud_server.control_plane[0].ipv4_address} root@${tolist(server.network)[0].ip}"
+  ]
+}
+
+output "ssh_worker_jump_commands" {
+  description = "SSH commands to connect to worker nodes via control plane jump host"
+  value = [
+    for i, server in hcloud_server.workers :
+    "ssh -J root@${hcloud_server.control_plane[0].ipv4_address} root@${tolist(server.network)[0].ip}"
   ]
 }
 
@@ -224,6 +238,11 @@ output "csi_install_command" {
   value       = var.enable_csi_driver ? "kubectl apply -f https://raw.githubusercontent.com/hetznercloud/csi-driver/${var.csi_driver_version}/deploy/kubernetes/hcloud-csi.yml" : "CSI auto-install disabled"
 }
 
+output "ingress_enabled" {
+  description = "Whether NGINX Ingress Controller is enabled"
+  value       = var.enable_ingress
+}
+
 output "s3_csi_enabled" {
   description = "Whether Scality S3 CSI driver is enabled"
   value       = var.enable_s3_csi_driver
@@ -237,6 +256,25 @@ output "s3_csi_endpoint" {
 output "check_s3_csi_command" {
   description = "Command to check Scality S3 CSI driver status"
   value       = var.enable_s3_csi_driver ? "kubectl get pods -n kube-system -l app=scality-mountpoint-s3-csi-driver" : "S3 CSI driver not enabled"
+}
+
+# =============================================================================
+# Cluster Autoscaler Information
+# =============================================================================
+
+output "cluster_autoscaler_enabled" {
+  description = "Whether Hetzner Cluster Autoscaler is enabled"
+  value       = var.enable_cluster_autoscaler
+}
+
+output "autoscaler_node_group" {
+  description = "Node group definition for the autoscaler (min:max:type:region:name)"
+  value       = var.enable_cluster_autoscaler ? local.autoscaler_node_group : "Cluster autoscaler not enabled"
+}
+
+output "check_autoscaler_command" {
+  description = "Command to check Cluster Autoscaler status"
+  value       = var.enable_cluster_autoscaler ? "kubectl get pods -n kube-system -l app=cluster-autoscaler" : "Cluster autoscaler not enabled"
 }
 
 # =============================================================================
@@ -279,6 +317,7 @@ Features Enabled:
   HCCM:          ${var.enable_hccm ? "Yes (${var.hccm_version})" : "No"}
   CSI Driver:    ${var.enable_csi_driver ? "Yes (${var.csi_driver_version})" : "No"}
   S3 CSI Driver: ${var.enable_s3_csi_driver ? "Yes (${var.s3_csi_version}) → ${local.s3_endpoint}" : "No"}
+  Autoscaler:    ${var.enable_cluster_autoscaler ? "Yes (${var.autoscaler_min_nodes}-${var.autoscaler_max_nodes} ${var.autoscaler_node_type})" : "No"}
   Auto Updates:  ${var.enable_auto_updates ? "Yes" : "No"}
   CIS Hardening: ${var.rke2_cis_profile != "" ? var.rke2_cis_profile : "No"}
 
@@ -320,6 +359,11 @@ output "check_hccm_command" {
 output "check_csi_command" {
   description = "Command to check CSI driver status"
   value       = var.enable_csi_driver ? "kubectl get pods -n kube-system -l app=hcloud-csi" : "CSI driver not enabled"
+}
+
+output "etcd_s3_backup_enabled" {
+  description = "Whether S3 etcd backup is enabled"
+  value       = var.enable_etcd_s3_backup
 }
 
 # =============================================================================

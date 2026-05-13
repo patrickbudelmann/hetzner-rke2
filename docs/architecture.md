@@ -3,35 +3,38 @@
 ## High-Level Architecture
 
 ```
-                        Internet
-                           │
-              ┌────────────┴────────────┐
-              │   Hetzner Load Balancer  │  (Public IPv4)
-              │     Port 6443 (TCP)      │
-              └────────────┬────────────┘
+                         Internet
+                            │
+           ┌────────────────┴────────────────┐
+           │                                 │
+   ┌───────▼────────┐             ┌──────────▼──────────┐
+   │  API LB        │             │  Ingress LB         │
+   │  (Port 6443)   │             │  (Ports 80/443)     │
+   │  Public IPv4   │             │  Public IPv4        │
+   └───────┬────────┘             └──────────┬──────────┘
+           │                                 │
+                   ┌────────┴────────┐
+                   │  Private Network │   10.0.0.0/16 (eu-central)
+                   │   (Internal)     │
+                   └────────┬────────┘
+                            │
+          ┌─────────────────┼─────────────────┐
+          │                 │                 │
+    ┌─────▼─────┐    ┌─────▼─────┐    ┌─────▼─────┐
+    │   CP-1    │    │   CP-2    │    │   CP-3    │   Control Plane
+    │ 10.0.1.10 │    │ 10.0.1.11 │    │ 10.0.1.12 │   (etcd + API +
+    │ (Master)  │    │ (Master)  │    │ (Master)  │    NGINX Ingress)
+    └─────┬─────┘    └─────┬─────┘    └─────┬─────┘
+          │                │                │
+          └────────────────┼────────────────┘
                            │
                   ┌────────┴────────┐
-                  │  Private Network │   10.0.0.0/16 (eu-central)
-                  │   (Internal)     │
-                  └────────┬────────┘
-                           │
-         ┌─────────────────┼─────────────────┐
-         │                 │                 │
-   ┌─────▼─────┐    ┌─────▼─────┐    ┌─────▼─────┐
-   │   CP-1    │    │   CP-2    │    │   CP-3    │   Control Plane
-   │ 10.0.1.10 │    │ 10.0.1.11 │    │ 10.0.1.12 │   (etcd + API)
-   │ (Master)  │    │ (Master)  │    │ (Master)  │
-   └─────┬─────┘    └─────┬─────┘    └─────┬─────┘
-         │                │                │
-         └────────────────┼────────────────┘
-                          │
-                 ┌────────┴────────┐
-                 │  Worker Nodes    │
-                 │  10.0.2.0/24     │
-                 │ ┌───┬───┬───┐   │
-                 │ │W-1│W-2│W-3│   │
-                 │ └───┴───┴───┘   │
-                 └──────────────────┘
+                  │  Worker Nodes    │
+                  │  10.0.2.0/24     │  (No public IPs)
+                  │ ┌───┬───┬───┐   │
+                  │ │W-1│W-2│W-3│   │
+                  │ └───┴───┴───┘   │
+                  └──────────────────┘
 ```
 
 ## Component Breakdown
@@ -40,9 +43,9 @@
 
 - **Count**: Odd numbers only (1, 3, 5, 7) for etcd quorum
 - **Default Type**: `cpx21` (2 vCPU, 4GB RAM, 40GB NVMe)
-- **Role**: Runs etcd, kube-apiserver, kube-scheduler, kube-controller-manager
+- **Role**: Runs etcd, kube-apiserver, kube-scheduler, kube-controller-manager, NGINX Ingress Controller
 - **Network**: Private IP from `10.0.1.0/24` subnet
-- **Access**: SSH (restricted), Kubernetes API (via LB)
+- **Access**: SSH (restricted), Kubernetes API (via LB), Ingress traffic (via Ingress LB)
 
 ### Worker Nodes
 
@@ -50,8 +53,10 @@
 - **Default Type**: `cpx31` (4 vCPU, 8GB RAM, 80GB NVMe)
 - **Role**: Runs user workloads
 - **Network**: Private IP from `10.0.2.0/24` subnet
+- **Public IP**: None (security by design)
+- **SSH Access**: Via jump host from control plane: `ssh -J root@<CP_IP> root@<WORKER_PRIVATE_IP>`
 
-### Load Balancer
+### API Load Balancer
 
 - **Type**: `lb11` (configurable)
 - **Ports**: 
@@ -59,6 +64,55 @@
   - 9345/tcp - RKE2 Supervisor (optional)
 - **Targets**: All control plane nodes (via private network)
 - **Algorithm**: Round robin (configurable)
+- **Purpose**: Single entry point for kubectl and API clients
+
+### Ingress Load Balancer
+
+- **Type**: `lb11` (configurable)
+- **Ports**:
+  - 80/tcp - HTTP traffic
+  - 443/tcp - HTTPS traffic
+- **Targets**: All control plane nodes (via private network)
+- **Purpose**: Routes external HTTP/HTTPS traffic to services via NGINX Ingress Controller
+- **Managed by**: NGINX Ingress Controller Helm chart
+
+### NGINX Ingress Controller
+
+- **Deployment**: DaemonSet on control plane nodes (or Deployment with hostNetwork)
+- **Namespace**: `ingress-nginx`
+- **Service**: LoadBalancer type, creates Hetzner LB automatically
+- **Purpose**: L7 load balancing, SSL termination, path-based routing
+- **Ingress Class**: `nginx`
+
+### Cluster Autoscaler (Optional)
+
+- **Deployment**: Separate deployment in `kube-system` namespace
+- **Purpose**: Automatically scales worker nodes based on pod scheduling pressure
+- **Node Pool**: Manages a separate pool of workers outside Terraform
+- **Configuration**: Min/max nodes, node type, node pool name
+- **Important**: Autoscaled nodes are not tracked in Terraform state
+
+### Etcd S3 Backup (Optional)
+
+- **Purpose**: Automated etcd snapshots to Hetzner Object Storage
+- **Schedule**: Configurable interval (default: every 12 hours)
+- **Retention**: Configurable number of snapshots to keep
+- **Storage**: Hetzner Object Storage (S3-compatible)
+- **Restore**: Manual process using rke2-etcd-snapshot utility
+
+### Cert-Manager (Optional)
+
+- **Deployment**: Namespace `cert-manager`
+- **Purpose**: Automatic TLS certificate management via Let's Encrypt
+- **CRDs**: Certificate, Issuer, ClusterIssuer, CertificateRequest
+- **Integration**: Works with NGINX Ingress Controller for HTTP-01 challenges
+
+### Prometheus + Grafana (Optional)
+
+- **Deployment**: Via Helm chart in `monitoring` namespace
+- **Components**: Prometheus, Alertmanager, Grafana, Node Exporter
+- **Purpose**: Cluster metrics, alerting, dashboards
+- **Grafana**: Accessible via ingress or port-forward
 
 ### Private Network
 

@@ -50,6 +50,15 @@ control_plane_image       = "ubuntu-24.04"
 # =============================================================================
 # Worker Node Configuration
 # =============================================================================
+# CRITICAL: Worker nodes have NO public IPs for security.
+# SSH access requires jump host pattern:
+#   ssh -J root@<CP_PUBLIC_IP> root@<WORKER_PRIVATE_IP>
+# Example: ssh -J root@123.45.67.89 root@10.0.2.10
+#
+# To find worker private IPs:
+#   kubectl get nodes -o wide
+#   terraform output worker_private_ips
+# =============================================================================
 worker_count       = 2
 worker_server_type = "cx33"  # Larger for workloads: cpx31, cpx41, cpx51
 worker_image       = "ubuntu-24.04"
@@ -113,3 +122,48 @@ lb_algorithm = "round_robin"
 # =============================================================================
 enable_backups = true
 backup_window  = "04:00"
+
+# =============================================================================
+# Cluster Autoscaler (Optional)
+# Dynamically scales worker nodes based on pod scheduling pressure.
+# Autoscaler-managed nodes are created OUTSIDE Terraform (causes state drift).
+# Use separate node pools for autoscaled vs static workers.
+# =============================================================================
+# enable_cluster_autoscaler = true
+# autoscaler_min_nodes      = 1
+# autoscaler_max_nodes      = 5
+# autoscaler_node_type      = "cpx31"
+# autoscaler_node_pool_name = "autoscaled-workers"
+
+# =============================================================================
+# Ingress Configuration
+# Deploys NGINX Ingress Controller with Hetzner Load Balancer
+# =============================================================================
+enable_ingress = true
+
+# =============================================================================
+# Cert-Manager Configuration
+# Automatic TLS certificate management for ingress resources
+# =============================================================================
+enable_cert_manager = true
+# cert_manager_version = "v1.16.0"
+
+# =============================================================================
+# Etcd S3 Backup (Optional but recommended for production)
+# Backs up etcd snapshots to Hetzner Object Storage
+# Requires Hetzner Object Storage bucket created beforehand
+# =============================================================================
+# enable_etcd_s3_backup = true
+# etcd_s3_bucket         = "rke2-etcd-backups"
+# etcd_s3_access_key     = "your-s3-access-key"
+# etcd_s3_secret_key     = "your-s3-secret-key"
+# etcd_s3_endpoint       = "https://fsn1.your-objectstorage.com"
+# etcd_s3_backup_interval = "12h"
+
+# =============================================================================
+# Monitoring (Optional)
+# Deploys Prometheus + Grafana stack via Helm
+# =============================================================================
+# enable_monitoring = true
+# monitoring_version = "65.0.0"
+# monitoring_grafana_admin_password = "change-me"

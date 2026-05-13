@@ -165,9 +165,9 @@ variable "load_balancer_subnet" {
 # Firewall Configuration
 # =============================================================================
 variable "allowed_ssh_cidr" {
-  description = "CIDR blocks allowed to access SSH (restrict to your IP for security)"
+  description = "CIDR blocks allowed to access SSH. MUST be set to your IP(s) for security (e.g., [\"YOUR_IP/32\"]). Default empty — deployment requires explicit configuration."
   type        = list(string)
-  default     = ["0.0.0.0/0"]
+  default     = []
 }
 
 variable "additional_allowed_cidrs" {
@@ -199,10 +199,11 @@ variable "cluster_api_dns" {
 # =============================================================================
 # RKE2 Configuration
 # =============================================================================
+# Last checked: 2026-05-13
 variable "rke2_version" {
-  description = "RKE2 version to install (e.g., v1.29.3+rke2r1)"
+  description = "RKE2 version to install (e.g., v1.31.4+rke2r2)"
   type        = string
-  default     = "v1.29.3+rke2r1"
+  default     = "v1.31.4+rke2r2"
 }
 
 variable "rke2_token" {
@@ -256,10 +257,11 @@ variable "enable_hccm" {
   default     = true
 }
 
+# Last checked: 2026-05-13
 variable "hccm_version" {
   description = "HCCM version to install"
   type        = string
-  default     = "v1.20.0"
+  default     = "v1.21.0"
 }
 
 # =============================================================================
@@ -271,10 +273,32 @@ variable "enable_csi_driver" {
   default     = true
 }
 
+# Last checked: 2026-05-13
 variable "csi_driver_version" {
   description = "CSI driver version to install"
   type        = string
-  default     = "v2.7.0"
+  default     = "v2.20.0"
+}
+
+# =============================================================================
+# NGINX Ingress Controller
+# =============================================================================
+variable "enable_ingress" {
+  description = "Enable NGINX Ingress Controller with Hetzner Load Balancer"
+  type        = bool
+  default     = true
+}
+
+variable "enable_cert_manager" {
+  description = "Enable cert-manager for TLS certificate automation"
+  type        = bool
+  default     = true
+}
+
+variable "cert_manager_version" {
+  description = "cert-manager Helm chart version"
+  type        = string
+  default     = "v1.16.0"
 }
 
 # =============================================================================
@@ -286,6 +310,7 @@ variable "enable_s3_csi_driver" {
   default     = false
 }
 
+# Last checked: 2026-05-13
 variable "s3_csi_version" {
   description = "Scality S3 CSI driver Helm chart version"
   type        = string
@@ -323,6 +348,18 @@ variable "s3_secret_access_key" {
   }
 }
 
+variable "enable_etcd_s3_backup" {
+  description = "Enable etcd backup to S3-compatible storage (Hetzner Object Storage)"
+  type        = bool
+  default     = false
+}
+
+variable "etcd_s3_bucket" {
+  description = "S3 bucket name for etcd backups (must exist before enabling)"
+  type        = string
+  default     = "rke2-etcd-backups"
+}
+
 # Validation: S3 CSI requires Hetzner CSI to be enabled
 resource "null_resource" "s3_csi_validation" {
   lifecycle {
@@ -339,6 +376,16 @@ resource "null_resource" "s3_csi_validation" {
     precondition {
       condition     = !var.enable_s3_csi_driver || var.s3_secret_access_key != ""
       error_message = "s3_secret_access_key is required when enable_s3_csi_driver is true."
+    }
+
+    precondition {
+      condition     = !var.enable_etcd_s3_backup || var.s3_access_key_id != ""
+      error_message = "s3_access_key_id is required when enable_etcd_s3_backup is true."
+    }
+
+    precondition {
+      condition     = !var.enable_etcd_s3_backup || var.s3_secret_access_key != ""
+      error_message = "s3_secret_access_key is required when enable_etcd_s3_backup is true."
     }
   }
 }
@@ -443,6 +490,70 @@ variable "enable_auto_updates" {
   description = "Enable automatic security updates (via unattended-upgrades)"
   type        = bool
   default     = true
+}
+
+# =============================================================================
+# Cluster Autoscaler Configuration
+# =============================================================================
+variable "enable_cluster_autoscaler" {
+  description = "Enable Hetzner Cluster Autoscaler for dynamic worker scaling"
+  type        = bool
+  default     = false
+}
+
+variable "autoscaler_min_nodes" {
+  description = "Minimum number of autoscaled worker nodes"
+  type        = number
+  default     = 1
+
+  validation {
+    condition     = var.autoscaler_min_nodes >= 0
+    error_message = "autoscaler_min_nodes must be 0 or greater."
+  }
+}
+
+variable "autoscaler_max_nodes" {
+  description = "Maximum number of autoscaled worker nodes"
+  type        = number
+  default     = 5
+
+  validation {
+    condition     = var.autoscaler_max_nodes >= var.autoscaler_min_nodes
+    error_message = "autoscaler_max_nodes must be >= autoscaler_min_nodes."
+  }
+}
+
+variable "autoscaler_node_type" {
+  description = "Server type for autoscaled worker nodes"
+  type        = string
+  default     = "cpx31"
+}
+
+variable "autoscaler_node_pool_name" {
+  description = "Name of the autoscaler node pool"
+  type        = string
+  default     = "autoscaled-workers"
+
+  validation {
+    condition     = can(regex("^[a-z0-9-]+$", var.autoscaler_node_pool_name))
+    error_message = "Node pool name must contain only lowercase letters, numbers, and hyphens."
+  }
+}
+
+# =============================================================================
+# Monitoring Configuration (Prometheus + Grafana)
+# =============================================================================
+variable "enable_monitoring" {
+  description = "Enable Prometheus + Grafana monitoring stack (kube-prometheus-stack)"
+  type        = bool
+  default     = false
+}
+
+# Last checked: 2026-05-13
+variable "monitoring_version" {
+  description = "kube-prometheus-stack Helm chart version"
+  type        = string
+  default     = "65.0.0"
 }
 
 # =============================================================================

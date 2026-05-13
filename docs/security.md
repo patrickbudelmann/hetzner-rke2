@@ -9,10 +9,44 @@ This project implements a **security-first architecture** with these key princip
 - Firewall rules with strict port restrictions
 - DNS-based API endpoint (stable TLS certificate)
 - Optional CIS hardening for production environments
+- Workers without public IPs (jump host access only)
+- File-based secret injection (no inline secrets in manifests)
+- Kubelet authentication hardened (anonymous-auth=false)
 
-## API Token Management
+## Secrets Management
 
-### Main Token (`hcloud_token`)
+### File-Based Secret Injection
+
+This project uses a **file-based approach** for injecting secrets into the cluster, avoiding inline secrets in Terraform manifests:
+
+1. **Secrets stored as files** on your local machine (e.g., `secrets/hcloud-token.txt`)
+2. **Cloud-init reads files** during server bootstrap
+3. **Kubernetes manifests reference files** via templating
+4. **No secrets in Terraform state** or version control
+
+**Example pattern:**
+
+```bash
+# Create secrets directory
+mkdir -p secrets
+
+# Store secrets as files
+echo "your-token-here" > secrets/hcloud-token.txt
+chmod 600 secrets/hcloud-token.txt
+
+# Cloud-init reads and injects into manifest
+# /var/lib/rancher/rke2/server/manifests/hcloud-secret.yaml
+```
+
+**Benefits:**
+- Secrets never appear in Terraform plan/apply output
+- No secrets in git history
+- Easy rotation (update file, re-apply)
+- Compatible with secret management tools (Vault, SOPS, etc.)
+
+### API Token Management
+
+#### Main Token (`hcloud_token`)
 
 The Hetzner Cloud API token used by Terraform to create resources (servers, networks, load balancers, firewalls):
 
@@ -96,10 +130,81 @@ If you need to rotate the token:
 ### Key Security Points
 
 1. **SSH (22/tcp)**: Restricted to your IP only - never open to 0.0.0.0/0
-2. **Kubernetes API (6443)**: Exposed to internet but only via Load Balancer
+2. **Kubernetes API (6443)**: Exposed to internet but only via Load Balancer, restricted to private network + `additional_allowed_cidrs`
 3. **etcd (2379-2380)**: Private network only - never exposed
 4. **Kubelet (10250)**: Private network only - prevents unauthorized access
 5. **Internal traffic**: Full access within private network (10.0.0.0/16)
+6. **Workers have NO public IPs**: All worker traffic flows through private network
+
+### Firewall Hardening
+
+#### API Server (6443) Restriction
+
+The Kubernetes API server port is **restricted to the private network** by default, with optional additional CIDRs:
+
+```hcl
+# terraform.tfvars
+additional_allowed_cidrs = [
+  "10.0.100.0/24",  # Your VPN network
+  "203.0.113.0/24", # Office network
+]
+```
+
+This means:
+- API traffic from internet must go through the Load Balancer
+- Direct API access to control plane nodes is blocked
+- Only private network + explicitly allowed CIDRs can reach 6443 directly
+
+#### Worker Node Isolation
+
+Worker nodes have **no public IPs** by design:
+
+- **Benefit**: Attackers cannot directly target workers from internet
+- **SSH Access**: Requires jump host through control plane
+- **Pattern**: `ssh -J root@<CP_PUBLIC_IP> root@<WORKER_PRIVATE_IP>`
+- **NodePort Services**: Still accessible via `additional_allowed_cidrs` if enabled
+
+### Kubelet Authentication
+
+The kubelet is hardened with **anonymous authentication disabled**:
+
+```yaml
+# RKE2 configuration (automatic)
+kubelet-arg:
+  - "anonymous-auth=false"
+  - "authentication-token-webhook=true"
+```
+
+**What this prevents:**
+- Unauthenticated requests to kubelet API
+- Unauthorized container exec via kubelet
+- Service account token enumeration
+
+**Impact:**
+- All kubelet requests require authentication
+- Kubernetes API server authenticates via webhook
+- Metrics scrapers need proper service accounts
+
+### Control Plane Bind Addresses
+
+Control plane components bind to **127.0.0.1** where possible:
+
+```yaml
+# kube-controller-manager
+bind-address: 127.0.0.1
+
+# kube-scheduler
+bind-address: 127.0.0.1
+```
+
+**Security benefit:**
+- These components only accept local connections
+- Cannot be accessed directly from network
+- Must go through API server (proper RBAC)
+
+**Exceptions:**
+- etcd binds to private network IP (for peer communication)
+- API server binds to private network IP (for kubelet communication)
 
 ## Network Security
 
@@ -222,12 +327,16 @@ Before deploying to production:
 - [ ] Set `cluster_api_dns` for a stable API endpoint (strongly recommended)
 - [ ] Enabled CIS hardening (`rke2_cis_profile = "cis"`)
 - [ ] Enabled automatic updates
-- [ ] Enabled etcd backups
+- [ ] Enabled etcd backups (or S3 backup)
 - [ ] Enabled CSI driver for encrypted volumes
 - [ ] Configured `additional_allowed_cidrs` for VPN/office (if needed)
 - [ ] Set `cluster_name` to something random (not "rke2")
 - [ ] Enabled `enable_nodeport_access` only if required
 - [ ] Verified node taints are appropriate (CP nodes should have taints)
+- [ ] Enabled ingress controller (`enable_ingress = true`)
+- [ ] Enabled cert-manager for automatic TLS (`enable_cert_manager = true`)
+- [ ] Configured S3 etcd backup for disaster recovery (optional)
+- [ ] Reviewed firewall rules for least privilege
 
 After deployment:
 
@@ -236,3 +345,7 @@ After deployment:
 - [ ] Updated kubeconfig to use DNS name (or LB IP if no DNS)
 - [ ] Verified all nodes are `Ready`
 - [ ] Checked HCCM and CSI are running
+- [ ] Verified ingress controller is running: `kubectl get pods -n ingress-nginx`
+- [ ] Tested SSH jump host pattern to workers
+- [ ] Confirmed kubelet anonymous-auth is disabled
+- [ ] Verified control plane components bind to 127.0.0.1

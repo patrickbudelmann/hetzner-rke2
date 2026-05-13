@@ -8,39 +8,47 @@ This Terraform configuration deploys a production-ready RKE2 Kubernetes cluster 
 - **Private Networking**: All inter-node communication via private network (10.0.0.0/16)
 - **Security**: Hetzner Firewall with minimal WAN exposure
 - **Load Balancing**: Hetzner LB for API access with health checks
+- **NGINX Ingress Controller**: Integrated ingress with Hetzner Load Balancer for HTTP/HTTPS traffic
+- **Cluster Autoscaler**: Dynamic worker scaling based on pod scheduling pressure (optional)
+- **S3 etcd Backup**: Automated etcd snapshots to Hetzner Object Storage (optional)
+- **cert-manager**: TLS certificate automation for ingress resources (optional)
+- **Prometheus + Grafana**: Optional monitoring stack for cluster observability
 - **Automated Setup**: Cloud-init scripts for RKE2 installation and joining
 - **Dynamic Scaling**: Easily adjust control plane and worker counts via variables
 
 ## Architecture
 
 ```
-                    Internet
-                       │
-           ┌───────────┴───────────┐
-           │  Hetzner Load Balancer│ (Port 6443)
-           │    (Public IP)        │
-           └───────────┬───────────┘
-                       │
-              ┌────────┴────────┐
-              │  Private Network│ (10.0.0.0/16)
-              │   (Internal)    │
-              └────────┬────────┘
-                       │
-        ┌──────────────┼──────────────┐
-        │              │              │
-   ┌────▼────┐   ┌────▼────┐   ┌────▼────┐
-   │  CP-1   │   │  CP-2   │   │  CP-3   │  Control Plane
-   │(Master) │   │(Master) │   │(Master) │  (etcd, API)
-   └────┬────┘   └────┬────┘   └────┬────┘
-        │              │              │
-        └──────────────┼──────────────┘
-                       │
-              ┌────────┴────────┐
-              │  Worker Nodes   │
-              │  ┌───┬───┬───┐  │
-              │  │W-1│W-2│W-3│  │
-              │  └───┴───┴───┘  │
-              └─────────────────┘
+                     Internet
+                        │
+        ┌───────────────┴───────────────┐
+        │                               │
+┌───────▼────────┐          ┌──────────▼──────────┐
+│  API LB        │          │  Ingress LB         │
+│  (Port 6443)   │          │  (Ports 80/443)     │
+│  Public IP     │          │  Public IP          │
+└───────┬────────┘          └──────────┬──────────┘
+        │                               │
+               ┌────────┴────────┐
+               │  Private Network│ (10.0.0.0/16)
+               │   (Internal)    │
+               └────────┬────────┘
+                        │
+         ┌──────────────┼──────────────┐
+         │              │              │
+    ┌────▼────┐   ┌────▼────┐   ┌────▼────┐
+    │  CP-1   │   │  CP-2   │   │  CP-3   │  Control Plane
+    │(Master) │   │(Master) │   │(Master) │  (etcd, API,
+    └────┬────┘   └────┬────┘   └────┬────┘   NGINX Ingress)
+         │              │              │
+         └──────────────┼──────────────┘
+                        │
+               ┌────────┴────────┐
+               │  Worker Nodes   │
+               │  ┌───┬───┬───┐  │
+               │  │W-1│W-2│W-3│  │ (No public IPs)
+               │  └───┴───┴───┘  │
+               └─────────────────┘
 ```
 
 ## Prerequisites
@@ -165,6 +173,11 @@ rke2_cni = "cilium"  # Options: cilium, canal, calico, flannel
 3. **Backup**: Enable backups for production control plane nodes (enabled by default)
 4. **SSH Access**: Restrict to your IP only for security
 5. **Load Balancer**: All API traffic goes through the LB, keeping nodes private
+6. **Worker SSH**: Workers have no public IPs. Use jump host: `ssh -J root@<CP_IP> root@<WORKER_PRIVATE_IP>`
+7. **Ingress**: NGINX Ingress Controller deploys automatically when `enable_ingress = true`
+8. **cert-manager**: Install cert-manager for automatic TLS certificates on ingress resources
+9. **Cluster Autoscaler**: Optional, scales workers independently of Terraform state
+10. **etcd Backup**: Enable S3 backup for production: set `enable_etcd_s3_backup = true`
 
 ## Troubleshooting
 

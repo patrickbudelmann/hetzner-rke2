@@ -24,13 +24,31 @@ resource "hcloud_firewall" "control_plane" {
     description = "ICMP (ping)"
   }
 
-  # Kubernetes API Server - exposed to internet via LB, but nodes need direct access too
+  # HTTP ingress (for NGINX Ingress Controller)
+  rule {
+    direction   = "in"
+    protocol    = "tcp"
+    port        = "80"
+    source_ips  = ["0.0.0.0/0", "::/0"]
+    description = "HTTP ingress"
+  }
+
+  # HTTPS ingress (for NGINX Ingress Controller)
+  rule {
+    direction   = "in"
+    protocol    = "tcp"
+    port        = "443"
+    source_ips  = ["0.0.0.0/0", "::/0"]
+    description = "HTTPS ingress"
+  }
+
+  # Kubernetes API Server (private network + allowed CIDRs; LB uses use_private_ip=true)
   rule {
     direction   = "in"
     protocol    = "tcp"
     port        = "6443"
-    source_ips  = ["0.0.0.0/0", "::/0"]
-    description = "Kubernetes API Server"
+    source_ips  = concat([var.network_cidr], var.additional_allowed_cidrs)
+    description = "Kubernetes API Server (private network + allowed CIDRs)"
   }
 
   # RKE2 supervisor - for node registration and communication
@@ -136,6 +154,24 @@ resource "hcloud_firewall" "workers" {
     protocol    = "icmp"
     source_ips  = ["0.0.0.0/0", "::/0"]
     description = "ICMP (ping)"
+  }
+
+  # HTTP ingress (for NGINX Ingress Controller)
+  rule {
+    direction   = "in"
+    protocol    = "tcp"
+    port        = "80"
+    source_ips  = ["0.0.0.0/0", "::/0"]
+    description = "HTTP ingress"
+  }
+
+  # HTTPS ingress (for NGINX Ingress Controller)
+  rule {
+    direction   = "in"
+    protocol    = "tcp"
+    port        = "443"
+    source_ips  = ["0.0.0.0/0", "::/0"]
+    description = "HTTPS ingress"
   }
 
   # NodePort Services (optional - for direct NodePort access)

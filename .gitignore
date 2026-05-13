@@ -1,1 +1,8 @@
 .opencode
+
+# Terraform state and backend credentials
+backend.hcl
+*.tfstate
+*.tfstate.backup
+.terraform/
+.terraform.lock.hcl
